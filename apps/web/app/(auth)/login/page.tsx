@@ -67,6 +67,7 @@ function LoginPageContent() {
   const cliState = searchParams.get("cli_state") || "";
   const platform = searchParams.get("platform");
   const isDesktopHandoff = platform === "desktop" && !cliCallbackRaw;
+  const isMobileHandoff = platform === "mobile" && !cliCallbackRaw;
   // `next` carries a protected URL the user was originally headed to
   // (e.g. /invite/{id}). With URL-driven workspaces there is no legacy
   // "/issues" default — if `next` is absent we decide after login based on
@@ -76,6 +77,8 @@ function LoginPageContent() {
 
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
   const [desktopError, setDesktopError] = useState("");
+  const [mobileToken, setMobileToken] = useState<string | null>(null);
+  const [mobileError, setMobileError] = useState("");
   const hasOnboarded = useHasOnboarded();
 
   // Already authenticated — honor ?next= or fall back to first workspace
@@ -83,22 +86,27 @@ function LoginPageContent() {
   // the user arrived to authorize the CLI.
   useEffect(() => {
     if (isLoading || !user || cliCallbackRaw) return;
-    if (isDesktopHandoff) {
+    if (isDesktopHandoff || isMobileHandoff) {
       // Desktop opened the browser for login but the web session is already
       // authenticated — mint a bearer token from the cookie session and hand
       // it off via deep link instead of silently redirecting to the workspace.
       api
         .issueCliToken()
         .then(({ token }) => {
-          setDesktopToken(token);
+          if (isDesktopHandoff) {
+            setDesktopToken(token);
+          } else {
+            setMobileToken(token);
+          }
           window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
         })
         .catch((err) => {
-          setDesktopError(
+          const message =
             err instanceof Error
               ? err.message
-              : t(($) => $.web.desktop_handoff.prepare_failed),
-          );
+              : t(($) => $.web.desktop_handoff.prepare_failed);
+          if (isDesktopHandoff) setDesktopError(message);
+          else setMobileError(message);
         });
       return;
     }
@@ -110,7 +118,7 @@ function LoginPageContent() {
     void resolveLoggedInDestination(qc, hasOnboarded, list).then((dest) =>
       router.replace(dest),
     );
-  }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, hasOnboarded, qc]);
+  }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, isMobileHandoff, hasOnboarded, qc, t]);
 
   const handleSuccess = async () => {
     // Read the latest user snapshot directly — the closure's `hasOnboarded`
@@ -121,6 +129,12 @@ function LoginPageContent() {
       router.push(nextUrl);
       return;
     }
+    if (isMobileHandoff) {
+      const { token } = await api.issueCliToken();
+      setMobileToken(token);
+      window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
+      return;
+    }
     const list = qc.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
     router.push(await resolveLoggedInDestination(qc, onboarded, list));
   };
@@ -129,6 +143,7 @@ function LoginPageContent() {
   // can redirect to the right place after login.
   const googleState = [
     platform === "desktop" ? "platform:desktop" : "",
+    platform === "mobile" ? "platform:mobile" : "",
     nextUrl ? `next:${nextUrl}` : "",
   ]
     .filter(Boolean)
@@ -137,8 +152,11 @@ function LoginPageContent() {
   // While the desktop handoff is in progress (or has produced a token/error),
   // render a dedicated screen instead of flashing the login form or redirecting
   // away to a workspace page.
-  if (isDesktopHandoff && user) {
-    if (desktopError) {
+  if ((isDesktopHandoff || isMobileHandoff) && user) {
+    const handoffError = isDesktopHandoff ? desktopError : mobileError;
+    const handoffToken = isDesktopHandoff ? desktopToken : mobileToken;
+    const handoffLabel = isDesktopHandoff ? "Desktop" : "Mobile";
+    if (handoffError) {
       return (
         <div className="flex min-h-screen items-center justify-center">
           <Card className="w-full max-w-sm">
@@ -146,7 +164,7 @@ function LoginPageContent() {
               <CardTitle className="text-2xl">
                 {t(($) => $.web.desktop_handoff.failed_title)}
               </CardTitle>
-              <CardDescription>{desktopError}</CardDescription>
+              <CardDescription>{handoffError}</CardDescription>
             </CardHeader>
           </Card>
         </div>
@@ -160,20 +178,20 @@ function LoginPageContent() {
               {t(($) => $.web.desktop_handoff.opening_title)}
             </CardTitle>
             <CardDescription>
-              {desktopToken
+              {handoffToken
                 ? t(($) => $.web.desktop_handoff.opening_description)
                 : t(($) => $.web.desktop_handoff.preparing)}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex justify-center">
-            {desktopToken ? (
+            {handoffToken ? (
               <Button
                 variant="outline"
                 onClick={() => {
-                  window.location.href = `multica://auth/callback?token=${encodeURIComponent(desktopToken)}`;
+                  window.location.href = `multica://auth/callback?token=${encodeURIComponent(handoffToken ?? "")}`;
                 }}
               >
-                {t(($) => $.web.desktop_handoff.open_button)}
+                {`Open Multica ${handoffLabel}`}
               </Button>
             ) : (
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

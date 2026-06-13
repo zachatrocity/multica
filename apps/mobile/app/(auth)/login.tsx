@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, View } from "react-native";
+import { KeyboardAvoidingView, Linking, Platform, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -14,7 +14,9 @@ export default function Login() {
   const sendCode = useAuthStore((s) => s.sendCode);
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [browserAuthSubmitting, setBrowserAuthSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
 
   const onSubmit = async () => {
     const trimmed = email.trim();
@@ -30,6 +32,25 @@ export default function Login() {
       setError(mapAuthError(err, "Couldn't send the code. Try again."));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+
+  const onBrowserGoogleLogin = async () => {
+    if (!webUrl) {
+      setError("Web login is unavailable for this build.");
+      return;
+    }
+    void Haptics.selectionAsync();
+    setBrowserAuthSubmitting(true);
+    setError(null);
+    try {
+      await Linking.openURL(`${webUrl}/login?platform=mobile`);
+    } catch (err) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setError(mapAuthError(err, "Couldn't open web login. Try again."));
+    } finally {
+      setBrowserAuthSubmitting(false);
     }
   };
 
@@ -73,11 +94,21 @@ export default function Login() {
 
           <Button
             size="lg"
-            disabled={submitting || !email.trim()}
+            disabled={submitting || browserAuthSubmitting || !email.trim()}
             onPress={onSubmit}
           >
             <Text>{submitting ? "Sending..." : "Send code"}</Text>
           </Button>
+          {webUrl ? (
+            <Button
+              size="lg"
+              variant="outline"
+              disabled={submitting || browserAuthSubmitting}
+              onPress={onBrowserGoogleLogin}
+            >
+              <Text>{browserAuthSubmitting ? "Opening browser..." : "Continue with Google"}</Text>
+            </Button>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

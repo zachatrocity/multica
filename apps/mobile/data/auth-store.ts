@@ -21,6 +21,7 @@ interface AuthState {
   initialize: () => Promise<void>;
   sendCode: (email: string) => Promise<void>;
   verifyCode: (email: string, code: string) => Promise<User>;
+  loginWithToken: (token: string) => Promise<User>;
   logout: () => Promise<void>;
   /** Overwrite the in-memory user — call after PATCH /api/me so name/avatar
    *  edits land without a refetch. Server response is the source of truth. */
@@ -67,6 +68,21 @@ export const useAuthStore = create<AuthState>((set) => ({
     api.setToken(token);
     set({ user });
     return user;
+  },
+
+  loginWithToken: async (token) => {
+    await setToken(token);
+    api.setToken(token);
+    try {
+      const user = await api.getMe();
+      set({ user });
+      return user;
+    } catch (err) {
+      await clearToken();
+      api.setToken(null);
+      set({ user: null });
+      throw err;
+    }
   },
 
   logout: async () => {

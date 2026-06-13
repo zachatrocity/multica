@@ -24,6 +24,7 @@ function CallbackContent() {
   const loginWithGoogle = useAuthStore((s) => s.loginWithGoogle);
   const [error, setError] = useState("");
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
+  const [mobileToken, setMobileToken] = useState<string | null>(null);
 
   useEffect(() => {
     const code = searchParams.get("code");
@@ -41,6 +42,7 @@ function CallbackContent() {
     const state = searchParams.get("state") || "";
     const stateParts = state.split(",");
     const isDesktop = stateParts.includes("platform:desktop");
+    const isMobile = stateParts.includes("platform:mobile");
     const nextPart = stateParts.find((p) => p.startsWith("next:"));
     // Strip "next:" prefix, then drop anything that isn't a safe relative path
     // so an attacker-controlled `state=next:https://evil` cannot redirect here.
@@ -48,12 +50,13 @@ function CallbackContent() {
 
     const redirectUri = `${window.location.origin}/auth/callback`;
 
-    if (isDesktop) {
-      // Desktop flow: exchange code for token, then redirect via deep link
+    if (isDesktop || isMobile) {
+      // Desktop/mobile flow: exchange code for token, then redirect via deep link
       api
         .googleLogin(code, redirectUri)
         .then(({ token }) => {
-          setDesktopToken(token);
+          if (isDesktop) setDesktopToken(token);
+          else setMobileToken(token);
           window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
         })
         .catch((err) => {
@@ -112,7 +115,9 @@ function CallbackContent() {
     }
   }, [searchParams, loginWithGoogle, router, qc]);
 
-  if (desktopToken) {
+  const handoffToken = desktopToken ?? mobileToken;
+
+  if (handoffToken) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Card className="w-full max-w-sm">
@@ -127,7 +132,7 @@ function CallbackContent() {
             <Button
               variant="outline"
               onClick={() => {
-                window.location.href = `multica://auth/callback?token=${encodeURIComponent(desktopToken)}`;
+                window.location.href = `multica://auth/callback?token=${encodeURIComponent(handoffToken)}`;
               }}
             >
               Open Multica Desktop

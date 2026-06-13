@@ -1,6 +1,7 @@
 import "../global.css";
 
 import { useEffect, useRef } from "react";
+import * as Linking from "expo-linking";
 import { Stack, router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -25,6 +26,7 @@ prewarmHighlighter();
 
 function AuthInitializer({ children }: { children: React.ReactNode }) {
   const initialize = useAuthStore((s) => s.initialize);
+  const loginWithToken = useAuthStore((s) => s.loginWithToken);
   const qc = useQueryClient();
   // Idempotent guard: 401 on multiple in-flight requests would otherwise
   // logout/navigate repeatedly during the same session-expire moment.
@@ -51,8 +53,32 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
         })();
       },
     });
-    initialize();
+    void initialize();
   }, [initialize, qc]);
+
+  useEffect(() => {
+    const completeBrowserLogin = async (url: string | null) => {
+      if (!url) return;
+      const { path, queryParams } = Linking.parse(url);
+      if (path !== "auth/callback") return;
+      const token = typeof queryParams?.token === "string" ? queryParams.token : null;
+      if (!token) return;
+      await loginWithToken(token);
+      router.replace("/");
+    };
+
+    void Linking.getInitialURL().then((url) => {
+      void completeBrowserLogin(url);
+    });
+
+    const sub = Linking.addEventListener("url", ({ url }) => {
+      void completeBrowserLogin(url);
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [loginWithToken]);
 
   return <>{children}</>;
 }
