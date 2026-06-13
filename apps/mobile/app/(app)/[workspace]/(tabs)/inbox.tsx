@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   FlatList,
   View,
@@ -14,6 +13,13 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Header } from "@/components/ui/header";
 import { IconButton } from "@/components/ui/icon-button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { HeaderActions } from "@/components/ui/app-header-actions";
 import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
 import { inboxListOptions } from "@/data/queries/inbox";
@@ -71,44 +77,18 @@ export default function Inbox() {
     }
   };
 
-  // Trailing batch menu — mirrors web's dropdown
-  // (packages/views/inbox/components/inbox-page.tsx). "Mark all read" is
-  // first (most common batch op); "Archive all" is destructive so it gets
-  // the iOS red treatment + Alert confirm.
-  const onPressMenu = () => {
-    const options = [
-      "Cancel",
-      "Mark all read",
-      "Archive all read",
-      "Archive completed",
-      "Archive all",
-    ];
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: 4,
-        title: "Inbox",
-      },
-      (i) => {
-        if (i === 1) markAllRead.mutate();
-        else if (i === 2) archiveAllRead.mutate();
-        else if (i === 3) archiveCompleted.mutate();
-        else if (i === 4) {
-          Alert.alert(
-            "Archive all?",
-            "This archives every inbox item, read or unread. You can still find them via the issue pages.",
-            [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Archive all",
-                style: "destructive",
-                onPress: () => archiveAll.mutate(),
-              },
-            ],
-          );
-        }
-      },
+  const confirmArchiveAll = () => {
+    Alert.alert(
+      "Archive all?",
+      "This archives every inbox item, read or unread. You can still find them via the issue pages.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Archive all",
+          style: "destructive",
+          onPress: () => archiveAll.mutate(),
+        },
+      ],
     );
   };
 
@@ -118,10 +98,11 @@ export default function Inbox() {
         title="Inbox"
         right={
           <>
-            <IconButton
-              name="ellipsis-horizontal"
-              onPress={onPressMenu}
-              accessibilityLabel="Inbox actions"
+            <InboxActionsMenu
+              onMarkAllRead={() => markAllRead.mutate()}
+              onArchiveAllRead={() => archiveAllRead.mutate()}
+              onArchiveCompleted={() => archiveCompleted.mutate()}
+              onArchiveAll={confirmArchiveAll}
             />
             <HeaderActions />
           </>
@@ -161,6 +142,48 @@ export default function Inbox() {
         />
       )}
     </View>
+  );
+}
+
+// Trailing batch menu — mirrors web's dropdown
+// (packages/views/inbox/components/inbox-page.tsx). "Mark all read" is
+// first (most common batch op); "Archive all" is destructive and keeps a
+// native confirmation alert.
+function InboxActionsMenu({
+  onMarkAllRead,
+  onArchiveAllRead,
+  onArchiveCompleted,
+  onArchiveAll,
+}: {
+  onMarkAllRead: () => void;
+  onArchiveAllRead: () => void;
+  onArchiveCompleted: () => void;
+  onArchiveAll: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <IconButton
+          name="ellipsis-horizontal"
+          accessibilityLabel="Inbox actions"
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="bottom" align="end" className="w-56">
+        <DropdownMenuItem onPress={onMarkAllRead}>
+          <Text>Mark all read</Text>
+        </DropdownMenuItem>
+        <DropdownMenuItem onPress={onArchiveAllRead}>
+          <Text>Archive all read</Text>
+        </DropdownMenuItem>
+        <DropdownMenuItem onPress={onArchiveCompleted}>
+          <Text>Archive completed</Text>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onPress={onArchiveAll}>
+          <Text>Archive all</Text>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
