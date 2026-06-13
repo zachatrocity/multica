@@ -13,6 +13,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const env = process.env.APP_ENV ?? "development";
   const isProd = env === "production";
   const isStaging = env === "staging";
+  const androidVersionCode = Number.parseInt(
+    process.env.EXPO_ANDROID_VERSION_CODE ?? "1",
+    10,
+  );
 
   return {
     ...config,
@@ -22,7 +26,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         ? "Multica (Staging)"
         : "Multica (Dev)",
     slug: "multica-mobile",
-    version: "0.1.0",
+    version: process.env.EXPO_VERSION_NAME ?? "0.1.0",
     orientation: "portrait",
     userInterfaceStyle: "automatic",
     scheme: "multica",
@@ -55,6 +59,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         : isStaging
           ? "ai.multica.mobile.staging"
           : (process.env.EXPO_ANDROID_PACKAGE_DEV ?? "ai.multica.mobile.dev"),
+      // Obtainium compares installed APK metadata against release assets.
+      // CI sets this from the release run so every published APK has a
+      // monotonically increasing Android version code.
+      versionCode: Number.isInteger(androidVersionCode)
+        ? androidVersionCode
+        : 1,
     },
     plugins: [
       "expo-router",

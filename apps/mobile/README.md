@@ -1,8 +1,66 @@
-# Multica Mobile (iOS)
+# Multica Mobile
 
-Expo + React Native iOS client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
+Expo + React Native client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
 
-## Just want to use it on your phone? (no development)
+## Android install and updates with Obtainium
+
+The Android fork is distributed through GitHub Releases so Obtainium can install
+the APK directly and detect later updates from the same source.
+
+### User setup
+
+1. Install Obtainium from <https://github.com/ImranR98/Obtainium/releases>.
+2. Open Obtainium and tap **Add App**.
+3. Paste this app source URL:
+
+   ```text
+   https://github.com/zachatrocity/multica
+   ```
+
+4. Keep the source type as **GitHub**.
+5. Leave **Track-Only** off. Track-only mode does not install APKs or perform
+   installed-version detection.
+6. Set **Filter APKs by Regular Expression** to:
+
+   ```text
+   ^multica-android\.apk$
+   ```
+
+7. Tap **Add**, then install the APK from the app detail screen.
+
+For updates, open Obtainium and check the app, or leave Obtainium's update
+notifications enabled. A newer GitHub Release with a `multica-android.apk`
+asset, the same package id, the same signing key, and a higher Android
+`versionCode` is detected as an update.
+
+### Release requirements
+
+Obtainium updates depend on Android package metadata, not only the GitHub tag.
+Every published Android APK must keep these properties stable:
+
+- Package id: `ai.multica.mobile`
+- APK release asset name: `multica-android.apk`
+- Signing key: the same release keystore for every published APK
+- Version name: normally the release tag without the leading `v`
+- Version code: a positive integer that increases on every published APK
+
+The `Android Release APK` workflow embeds `EXPO_VERSION_NAME` and
+`EXPO_ANDROID_VERSION_CODE` during Expo prebuild, signs the APK, uploads the
+stable `multica-android.apk` artifact, and attaches that same asset to the
+GitHub Release when run for a `vX.Y.Z` tag.
+
+Before publishing Android releases, configure these repository secrets:
+
+- `ANDROID_RELEASE_KEYSTORE_BASE64`: base64-encoded Android release keystore
+- `ANDROID_RELEASE_KEY_ALIAS`: key alias inside the keystore
+- `ANDROID_RELEASE_KEY_PASSWORD`: key password
+- `ANDROID_RELEASE_STORE_PASSWORD`: keystore password
+
+Tagged release builds intentionally fail if those secrets are missing. Unsigned
+or one-off debug-signed APKs may install once, but Android will reject future
+updates signed with a different key.
+
+## iOS install from source
 
 Multica isn't on the App Store yet — until that changes, anyone who wants it on their iPhone builds from source. One command:
 
