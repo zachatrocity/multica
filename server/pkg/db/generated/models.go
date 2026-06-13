@@ -423,6 +423,21 @@ type NotificationPreference struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type MobilePushSubscription struct {
+	ID            pgtype.UUID        `json:"id"`
+	UserID        pgtype.UUID        `json:"user_id"`
+	Provider      string             `json:"provider"`
+	Token         string             `json:"token"`
+	DeviceName    pgtype.Text        `json:"device_name"`
+	AppVariant    string             `json:"app_variant"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	LastFailureAt pgtype.Timestamptz `json:"last_failure_at"`
+	FailureCount  int32              `json:"failure_count"`
+	DisabledAt    pgtype.Timestamptz `json:"disabled_at"`
+}
+
 type PersonalAccessToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	UserID      pgtype.UUID        `json:"user_id"`

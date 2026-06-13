@@ -10,6 +10,7 @@ import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ThemeProvider } from "@react-navigation/native";
 import { PortalHost } from "@rn-primitives/portal";
 import { api } from "@/data/api";
+import { useMobilePushNotifications } from "@/data/mobile-push";
 import { queryClient } from "@/data/query-client";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -57,6 +58,11 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function MobilePushNotifications() {
+  useMobilePushNotifications();
+  return null;
+}
+
 export default function RootLayout() {
   const { colorScheme, isDarkColorScheme } = useColorScheme();
   return (
@@ -67,6 +73,7 @@ export default function RootLayout() {
             <ThemeProvider value={NAV_THEME[colorScheme]}>
               <AuthInitializer>
                 <LightboxProvider>
+                  <MobilePushNotifications />
                   <StatusBar style={isDarkColorScheme ? "light" : "dark"} />
                   <Stack screenOptions={{ headerShown: false }}>
                     <Stack.Screen name="index" />

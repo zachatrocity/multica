@@ -441,6 +441,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
+			r.Route("/api/mobile-push/subscriptions", func(r chi.Router) {
+				r.Get("/", h.ListMobilePushSubscriptions)
+				r.Post("/", h.UpsertMobilePushSubscription)
+				r.Delete("/{id}", h.DeleteMobilePushSubscription)
+			})
+
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/search", h.SearchIssues)

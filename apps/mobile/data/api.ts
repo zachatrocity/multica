@@ -36,12 +36,14 @@ import type {
   ListProjectResourcesResponse,
   ListProjectsResponse,
   MemberWithUser,
+  MobilePushSubscription,
   PinnedItem,
   PinnedItemType,
   Project,
   ProjectResource,
   Reaction,
   ReorderPinsRequest,
+  RegisterMobilePushSubscriptionRequest,
   RuntimeDevice,
   SearchIssuesResponse,
   SearchProjectsResponse,
@@ -89,6 +91,8 @@ import {
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
   EMPTY_MEMBER_LIST,
+  EMPTY_MOBILE_PUSH_SUBSCRIPTION,
+  EMPTY_MOBILE_PUSH_SUBSCRIPTION_LIST,
   EMPTY_NOTIFICATION_PREFERENCES,
   EMPTY_PIN_LIST,
   EMPTY_PROJECT,
@@ -104,6 +108,8 @@ import {
   ListProjectResourcesResponseSchema,
   ListProjectsResponseSchema,
   MemberListSchema,
+  MobilePushSubscriptionListSchema,
+  MobilePushSubscriptionSchema,
   PinListSchema,
   PinnedItemSchema,
   ProjectSchema,
@@ -419,6 +425,36 @@ class ApiClient {
       { method: "PUT", body: JSON.stringify({ preferences }) },
       { endpoint: "updateNotificationPreferences" },
     );
+  }
+
+  // --- Mobile push subscriptions ---
+  async listMobilePushSubscriptions(
+    opts?: { signal?: AbortSignal },
+  ): Promise<MobilePushSubscription[]> {
+    return this.fetchValidated(
+      "/api/mobile-push/subscriptions",
+      MobilePushSubscriptionListSchema,
+      EMPTY_MOBILE_PUSH_SUBSCRIPTION_LIST,
+      { ...opts, endpoint: "listMobilePushSubscriptions" },
+    );
+  }
+
+  async registerMobilePushSubscription(
+    body: RegisterMobilePushSubscriptionRequest,
+  ): Promise<MobilePushSubscription> {
+    return this.fetchValidatedWith(
+      "/api/mobile-push/subscriptions",
+      MobilePushSubscriptionSchema,
+      EMPTY_MOBILE_PUSH_SUBSCRIPTION,
+      { method: "POST", body: JSON.stringify(body) },
+      { endpoint: "registerMobilePushSubscription" },
+    );
+  }
+
+  async deleteMobilePushSubscription(id: string): Promise<void> {
+    await this.fetch<void>(`/api/mobile-push/subscriptions/${id}`, {
+      method: "DELETE",
+    });
   }
 
   // --- Workspaces ---

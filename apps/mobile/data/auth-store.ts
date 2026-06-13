@@ -12,6 +12,7 @@
 import { create } from "zustand";
 import type { User } from "@multica/core/types";
 import { api, ApiError } from "./api";
+import { deleteStoredMobilePushSubscription } from "./mobile-push";
 import { clearToken, getToken, setToken } from "./secure-storage";
 import { useWorkspaceStore } from "./workspace-store";
 
@@ -70,6 +71,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
+    try {
+      await deleteStoredMobilePushSubscription();
+    } catch (err) {
+      console.warn("[mobile-push] failed to delete subscription on logout", err);
+    }
     await clearToken();
     api.setToken(null);
     set({ user: null });
