@@ -1,6 +1,8 @@
-# Multica Mobile (iOS)
+# Multica Mobile
 
-Expo + React Native iOS client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
+Expo + React Native mobile client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
+
+Android notification planning lives in [`docs/android-notifications-plan.md`](./docs/android-notifications-plan.md). The recommended path is UnifiedPush with ntfy as the self-hosted distributor, not raw ntfy topics as first-class app notifications.
 
 ## Just want to use it on your phone? (no development)
 
