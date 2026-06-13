@@ -1,0 +1,155 @@
+name: Weekly Upstream Sync PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: "Repository to sync from, in owner/name form."
+        required: true
+        default: "multica-ai/multica"
+      upstream_branch:
+        description: "Upstream branch to merge."
+        required: true
+        default: "main"
+      assignee:
+        description: "GitHub username assigned to the sync PR."
+        required: true
+        default: "zachatrocity"
+  schedule:
+    # Weekly on Monday at 15:00 UTC.
+    - cron: "0 15 * * 1"
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: weekly-upstream-sync-pr
+  cancel-in-progress: false
+
+jobs:
+  open-sync-pr:
+    name: Open upstream sync PR
+    runs-on: ubuntu-latest
+    env:
+      BASE_BRANCH: main
+      UPSTREAM_REPO: ${{ inputs.upstream_repo || 'multica-ai/multica' }}
+      UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
+      REVIEW_ASSIGNEE: ${{ inputs.assignee || 'zachatrocity' }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch origin "${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          git fetch upstream "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
+
+      - name: Prepare sync branch
+        id: sync
+        run: |
+          set -euo pipefail
+
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" "origin/${BASE_BRANCH}"; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "Fork ${BASE_BRANCH} already contains upstream/${UPSTREAM_BRANCH}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          sync_date="$(date -u +%Y-%m-%d)"
+          sync_branch="fork-sync/weekly-upstream-${UPSTREAM_BRANCH}"
+
+          git checkout -B "$sync_branch" "origin/${BASE_BRANCH}"
+
+          if ! git merge --no-ff "upstream/${UPSTREAM_BRANCH}" \
+            -m "chore: sync upstream ${UPSTREAM_BRANCH} (${sync_date})"; then
+            {
+              echo "## Upstream sync requires manual conflict resolution"
+              echo
+              echo "Branch: \`$sync_branch\`"
+              echo "Upstream: \`${UPSTREAM_REPO}/${UPSTREAM_BRANCH}\`"
+              echo
+              echo "Resolve conflicts locally by running:"
+              echo
+              echo "\`\`\`bash"
+              echo "git fetch origin ${BASE_BRANCH}"
+              echo "git fetch upstream ${UPSTREAM_BRANCH}"
+              echo "git checkout -B $sync_branch origin/${BASE_BRANCH}"
+              echo "git merge --no-ff upstream/${UPSTREAM_BRANCH}"
+              echo "\`\`\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if git diff --quiet "origin/${BASE_BRANCH}" "$sync_branch"; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "Merge completed with no file changes." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git push --force-with-lease origin "$sync_branch"
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          echo "sync_branch=$sync_branch" >> "$GITHUB_OUTPUT"
+          echo "sync_date=$sync_date" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update sync PR
+        if: steps.sync.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BRANCH: ${{ steps.sync.outputs.sync_branch }}
+          SYNC_DATE: ${{ steps.sync.outputs.sync_date }}
+        run: |
+          set -euo pipefail
+
+          title="chore: weekly upstream sync ${SYNC_DATE}"
+          body_file="$(mktemp)"
+          cat > "$body_file" <<EOF
+          Weekly upstream sync from \`${UPSTREAM_REPO}/${UPSTREAM_BRANCH}\` into the Android support fork.
+
+          Review focus:
+          - Preserve Android package IDs in \`apps/mobile/app.config.ts\`.
+          - Preserve Android scripts in \`apps/mobile/package.json\`.
+          - Keep the fork-owned Android APK workflow intact.
+          - Re-run mobile validation for \`apps/mobile\`, \`packages/core\`, workspace files, and lockfile changes.
+
+          Suggested validation:
+          1. \`pnpm install --frozen-lockfile\`
+          2. \`pnpm exec turbo typecheck lint test --filter=@multica/mobile\`
+          3. Expo Android prebuild for the target environment
+          4. \`./gradlew assembleRelease\` from the generated Android project
+          5. Manual Android smoke test: auth handoff, workspace switch, issue detail, comments, attachments, offline/reconnect
+          EOF
+
+          existing_pr="$(gh pr list \
+            --head "$SYNC_BRANCH" \
+            --base "$BASE_BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "$existing_pr" ]]; then
+            gh pr edit "$existing_pr" \
+              --title "$title" \
+              --body-file "$body_file" \
+              --add-assignee "$REVIEW_ASSIGNEE"
+            echo "Updated PR #${existing_pr} and assigned ${REVIEW_ASSIGNEE}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --title "$title" \
+              --body-file "$body_file" \
+              --assignee "$REVIEW_ASSIGNEE"
+            echo "Created sync PR and assigned ${REVIEW_ASSIGNEE}." >> "$GITHUB_STEP_SUMMARY"
+          fi
