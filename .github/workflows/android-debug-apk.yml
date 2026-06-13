@@ -50,9 +50,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Write production env
+        working-directory: apps/mobile
+        run: |
+          cat > .env.production.local <<EOF
+          EXPO_PUBLIC_API_URL=${{ secrets.SELFHOSTED_API_URL }}
+          EXPO_PUBLIC_WEB_URL=${{ secrets.SELFHOSTED_WEB_URL }}
+          EOF
+
       - name: Generate Android native project
         working-directory: apps/mobile
-        run: CI=1 pnpm exec dotenv -e .env.production -- cross-env APP_ENV=production expo prebuild --platform android --no-install --clean
+        run: CI=1 pnpm exec dotenv -e .env.production.local -- cross-env APP_ENV=production expo prebuild --platform android --no-install --clean
 
       - name: Build release APK
         working-directory: apps/mobile/android
