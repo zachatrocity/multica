@@ -1,4 +1,4 @@
-name: Android Debug APK
+name: Android Release APK
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-debug-apk:
+  build-release-apk:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -54,13 +54,13 @@ jobs:
         working-directory: apps/mobile
         run: CI=1 pnpm exec dotenv -e .env.production -- cross-env APP_ENV=production expo prebuild --platform android --no-install --clean
 
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: apps/mobile/android
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleRelease
 
-      - name: Upload debug APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: multica-android-debug-apk
-          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          name: multica-android-release-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
