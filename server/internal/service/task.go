@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/mention"
+	"github.com/multica-ai/multica/server/internal/mobilepush"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -2248,6 +2249,7 @@ func (s *TaskService) publishQuickCreateInbox(item db.InboxItem, workspaceID, ag
 		ActorID:     agentID,
 		Payload:     map[string]any{"item": resp},
 	})
+	go mobilepush.SendForInboxItem(context.Background(), s.Queries, item)
 }
 
 // agentToMap builds a simple map for broadcasting agent status updates.

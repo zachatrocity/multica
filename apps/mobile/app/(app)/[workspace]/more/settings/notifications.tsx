@@ -19,12 +19,13 @@ import { Separator } from "@/components/ui/separator";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { notificationPreferenceOptions } from "@/data/queries/notification-preferences";
 import { useUpdateNotificationPreferences } from "@/data/mutations/notification-preferences";
+import { registerExpoPushSubscription } from "@/data/mobile-push";
 
-const INBOX_GROUPS: Array<{
+const INBOX_GROUPS: {
   key: Exclude<NotificationGroupKey, "system_notifications">;
   label: string;
   description: string;
-}> = [
+}[] = [
   {
     key: "assignments",
     label: "Assignments",
@@ -70,6 +71,11 @@ export default function NotificationsSettingsScreen() {
       next[key] = "muted";
     }
     mutation.mutate(next);
+    if (key === "system_notifications" && enabled) {
+      registerExpoPushSubscription().catch((err) => {
+        console.warn("[mobile-push] failed to register Expo push token", err);
+      });
+    }
   };
 
   const systemEnabled = preferences.system_notifications !== "muted";

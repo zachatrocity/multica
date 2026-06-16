@@ -1,6 +1,6 @@
-# Multica Mobile (iOS)
+# Multica Mobile
 
-Expo + React Native iOS client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
+Expo + React Native client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
 
 ## Just want to use it on your phone? (no development)
 
@@ -57,6 +57,8 @@ cp apps/mobile/.env.example apps/mobile/.env.development.local
 ```
 
 If your Apple ID isn't on the Multica Apple Developer team yet, also uncomment and set `EXPO_BUNDLE_IDENTIFIER_DEV` to a reverse-domain you own (e.g. `com.yourname.multica.dev`). This **only** overrides the dev variant — staging / production bundle ids are intentionally not overridable so variants can coexist.
+
+Android push notifications use Expo Push Service by default and require `EXPO_EAS_PROJECT_ID` plus Firebase/FCM credentials on the matching EAS project. See [`docs/android-notifications.md`](./docs/android-notifications.md) for development, staging, production, self-hosted, and UnifiedPush/ntfy setup.
 
 ## Build it onto your iPhone
 

@@ -25,6 +25,7 @@ import type {
   ListProjectResourcesResponse,
   ListProjectsResponse,
   MemberWithUser,
+  MobilePushSubscription,
   PinnedItem,
   Project,
   ProjectResource,
@@ -122,6 +123,32 @@ export const EMPTY_NOTIFICATION_PREFERENCES = {
   workspace_id: "",
   preferences: {},
 } as const;
+
+export const MobilePushSubscriptionSchema: z.ZodType<MobilePushSubscription> = z.object({
+  id: z.string(),
+  provider: z.string(),
+  device_name: z.string().nullable().default(null),
+  app_variant: z.string().default("production"),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  last_success_at: z.string().nullable().default(null),
+  last_failure_at: z.string().nullable().default(null),
+  failure_count: z.number().default(0),
+}).loose();
+
+export const MobilePushSubscriptionListSchema = z.array(MobilePushSubscriptionSchema).default([]);
+export const EMPTY_MOBILE_PUSH_SUBSCRIPTION: MobilePushSubscription = {
+  id: "",
+  provider: "expo",
+  device_name: null,
+  app_variant: "production",
+  created_at: "",
+  updated_at: "",
+  last_success_at: null,
+  last_failure_at: null,
+  failure_count: 0,
+};
+export const EMPTY_MOBILE_PUSH_SUBSCRIPTION_LIST: MobilePushSubscription[] = [];
 
 const LabelSchema = z.object({
   id: z.string(),
