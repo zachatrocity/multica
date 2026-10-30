@@ -1,4 +1,4 @@
-# Multica installer for Windows — one command to get started.
+# Multica installer for Windows - one command to get started.
 #
 # Install CLI (default): connects to multica.ai
 #   irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
@@ -17,6 +17,11 @@ $RepoWebUrl    = "https://github.com/multica-ai/multica"
 $DefaultInstallDir = Join-Path $env:USERPROFILE ".multica\server"
 $InstallDir    = if ($env:MULTICA_INSTALL_DIR) { $env:MULTICA_INSTALL_DIR } else { $DefaultInstallDir }
 
+# Host ports Compose reported after `up -d`; set by Setup-Server and reused by
+# the summary so the health check and the printed URLs cannot diverge.
+$script:SelfHostBackendPort  = $null
+$script:SelfHostFrontendPort = $null
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -30,44 +35,53 @@ function Test-CommandExists {
     $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-function Get-EnvFileValue {
+function New-RandomHex {
+    param([int]$ByteCount)
+
+    $bytes = New-Object byte[] $ByteCount
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
+    return -join ($bytes | ForEach-Object { "{0:x2}" -f $_ })
+}
+
+# Host port Docker Compose actually published for a service.
+#
+# This is the only authority. Compose's interpolation gives the calling process
+# environment precedence over .env, so an ambient PORT / BACKEND_PORT / API_PORT
+# / SERVER_PORT / FRONTEND_PORT moves the published port without touching the
+# file. Re-deriving the port from .env alone made the installer probe and print
+# a port the stack was never published on (#6145). Must be called from the
+# installation directory, after `up -d`.
+function Get-ComposePublishedPort {
     param(
-        [string]$Path,
-        [string]$Name,
-        [string]$Default
+        [Parameter(Mandatory = $true)][string]$Service,
+        [Parameter(Mandatory = $true)][int]$ContainerPort
     )
 
-    if (-not (Test-Path $Path)) {
-        return $Default
+    $output = $null
+    try {
+        $output = docker compose -f docker-compose.selfhost.yml port $Service $ContainerPort 2>$null
+    } catch {
+        return $null
+    }
+    if ($LASTEXITCODE -ne 0) {
+        return $null
     }
 
-    $prefix = "$Name="
-    $line = Get-Content $Path |
-        Where-Object { $_.StartsWith($prefix) } |
-        Select-Object -Last 1
+    $line = @($output | Where-Object { $_ }) | Select-Object -Last 1
     if (-not $line) {
-        return $Default
+        return $null
     }
 
-    $value = $line.Substring($prefix.Length).Trim().Trim('"').Trim("'")
-    if ([string]::IsNullOrWhiteSpace($value)) {
-        return $Default
+    $published = ($line -split ":")[-1].Trim()
+    if ($published -notmatch '^[0-9]+$') {
+        return $null
     }
-    return $value
-}
-
-function Get-SelfHostBackendPort {
-    foreach ($name in @("BACKEND_PORT", "API_PORT", "SERVER_PORT", "PORT")) {
-        $value = Get-EnvFileValue -Path (Join-Path $InstallDir ".env") -Name $name -Default ""
-        if (-not [string]::IsNullOrWhiteSpace($value)) {
-            return $value
-        }
-    }
-    return "8080"
-}
-
-function Get-SelfHostFrontendPort {
-    return Get-EnvFileValue -Path (Join-Path $InstallDir ".env") -Name "FRONTEND_PORT" -Default "3000"
+    return $published
 }
 
 function Get-LatestVersion {
@@ -274,10 +288,10 @@ function Install-CliBinary {
             }
             Write-Ok "Checksum verified"
         } else {
-            Write-Warn "Could not find checksum entry for $releaseAsset — skipping verification."
+            Write-Warn "Could not find checksum entry for $releaseAsset - skipping verification."
         }
     } catch {
-        Write-Warn "Could not download checksums.txt — skipping verification."
+        Write-Warn "Could not download checksums.txt - skipping verification."
     }
 
     Expand-Archive -Path (Join-Path $tmpDir "multica.zip") -DestinationPath $tmpDir -Force
@@ -411,11 +425,16 @@ function Install-Server {
     Write-Ok "Repository ready at $InstallDir ($serverRef)"
 
     if (-not (Test-Path ".env")) {
-        Write-Info "Creating .env with random JWT_SECRET..."
+        Write-Info "Creating .env with random secrets..."
         Copy-Item ".env.example" ".env"
-        $jwt = -join ((1..32) | ForEach-Object { "{0:x2}" -f (Get-Random -Maximum 256) })
-        (Get-Content ".env") -replace '^JWT_SECRET=.*', "JWT_SECRET=$jwt" | Set-Content ".env"
-        Write-Ok "Generated .env with random JWT_SECRET"
+        $jwt = New-RandomHex 32
+        $pgpass = New-RandomHex 24
+        $content = Get-Content ".env"
+        $content = $content -replace '^JWT_SECRET=.*', "JWT_SECRET=$jwt"
+        $content = $content -replace '^POSTGRES_PASSWORD=.*', "POSTGRES_PASSWORD=$pgpass"
+        $content = $content -replace '^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)', "`${1}$pgpass`${2}"
+        $content | Set-Content ".env"
+        Write-Ok "Generated .env with random JWT_SECRET and POSTGRES_PASSWORD"
     } else {
         Write-Ok "Using existing .env"
     }
@@ -425,12 +444,22 @@ function Install-Server {
     Write-Info "Starting Multica services (this may take a few minutes on first run)..."
     docker compose -f docker-compose.selfhost.yml up -d
 
+    # Read the ports Compose actually published, once, and reuse them for both
+    # the health check and the summary so the two can never disagree.
+    $script:SelfHostBackendPort = Get-ComposePublishedPort -Service "backend" -ContainerPort 8080
+    if (-not $script:SelfHostBackendPort) {
+        Write-Fail "Started the stack but could not read the backend host port from Docker Compose.`n  Check it with: cd $InstallDir; docker compose -f docker-compose.selfhost.yml ps"
+    }
+    $script:SelfHostFrontendPort = Get-ComposePublishedPort -Service "frontend" -ContainerPort 3000
+    if (-not $script:SelfHostFrontendPort) {
+        Write-Fail "Started the stack but could not read the frontend host port from Docker Compose.`n  Check it with: cd $InstallDir; docker compose -f docker-compose.selfhost.yml ps"
+    }
+
     Write-Info "Waiting for backend to be ready..."
-    $backendPort = Get-SelfHostBackendPort
     $ready = $false
     for ($i = 1; $i -le 45; $i++) {
         try {
-            $null = Invoke-WebRequest -Uri "http://localhost:$backendPort/health" -UseBasicParsing -TimeoutSec 2
+            $null = Invoke-WebRequest -Uri "http://localhost:$($script:SelfHostBackendPort)/health" -UseBasicParsing -TimeoutSec 2
             $ready = $true
             break
         } catch {
@@ -492,10 +521,8 @@ function Start-LocalInstall {
     Write-Host "  [OK] Multica server is running and CLI is ready!" -ForegroundColor Green
     Write-Host "  ============================================" -ForegroundColor Green
     Write-Host ""
-    $frontendPort = Get-SelfHostFrontendPort
-    $backendPort = Get-SelfHostBackendPort
-    Write-Host "  Frontend:  http://localhost:$frontendPort"
-    Write-Host "  Backend:   http://localhost:$backendPort"
+    Write-Host "  Frontend:  http://localhost:$($script:SelfHostFrontendPort)"
+    Write-Host "  Backend:   http://localhost:$($script:SelfHostBackendPort)"
     Write-Host "  Server at: $InstallDir"
     Write-Host ""
     Write-Host "  Next: configure your CLI to connect"

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,7 +25,7 @@ var userCmd = &cobra.Command{
 var userProfileCmd = &cobra.Command{
 	Use:   "profile",
 	Short: "Get or update your personal profile",
-	Long: "Manage the personal profile that agents see when they pick up a task " +
+	Long: "Manage the personal profile that agents see when they start a run " +
 		"on your behalf. The description is injected into the agent brief under " +
 		"`## Requesting User`, so use it to share role, stack, and collaboration " +
 		"preferences.",
@@ -59,7 +58,8 @@ func init() {
 
 	userProfileUpdateCmd.Flags().String("description", "", "New profile description (decodes \\n, \\r, \\t, \\\\; pipe via --description-stdin to preserve literal backslashes)")
 	userProfileUpdateCmd.Flags().Bool("description-stdin", false, "Read description from stdin (preserves multi-line content verbatim)")
-	userProfileUpdateCmd.Flags().String("description-file", "", "Read description from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes)")
+	userProfileUpdateCmd.Flags().String("description-file", "", "Read description from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
+	userProfileUpdateCmd.Flags().Bool("allow-external-file", false, "Allow --description-file to read a path outside the current working directory. Off by default so a stale temp file from another run/environment can't be picked up (MUL-4252).")
 	userProfileUpdateCmd.Flags().Bool("clear", false, "Clear the profile description (equivalent to --description \"\")")
 	userProfileUpdateCmd.Flags().String("output", "table", "Output format: table or json")
 }
@@ -70,7 +70,7 @@ func runUserProfileGet(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	var me map[string]any
@@ -116,7 +116,7 @@ func runUserProfileUpdate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	var me map[string]any

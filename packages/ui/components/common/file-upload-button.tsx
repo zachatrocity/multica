@@ -1,8 +1,9 @@
 "use client";
 
 import { useRef } from "react";
-import { Paperclip } from "lucide-react";
+import { Paperclip } from "@multica/ui/icons";
 import { useTranslation } from "react-i18next";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { cn } from "@multica/ui/lib/utils";
 
 interface FileUploadButtonProps {
@@ -32,25 +33,24 @@ function FileUploadButton({
     for (const file of files) onSelect(file);
   };
 
-  const iconSize = size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
-  const btnSize = size === "sm" ? "h-6 w-6" : "h-7 w-7";
+  // `size-*`, not `h-* w-*`: the icon button's own `[&_svg:not([class*='size-'])]`
+  // rule would otherwise override it (icon-xs forces 12px).
+  const iconSize = size === "sm" ? "size-3.5" : "size-4.5";
+  const buttonSize = size === "sm" ? "icon-xs" : "icon-sm";
 
   return (
     <>
-      <button
+      <IconButton
         type="button"
+        variant="ghost"
+        size={buttonSize}
         onClick={() => inputRef.current?.click()}
         disabled={disabled}
-        aria-label={attachLabel}
-        title={attachLabel}
-        className={cn(
-          "inline-flex items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-50 disabled:pointer-events-none",
-          btnSize,
-          className,
-        )}
+        label={attachLabel}
+        className={cn("text-muted-foreground", className)}
       >
         <Paperclip className={iconSize} />
-      </button>
+      </IconButton>
       <input
         ref={inputRef}
         type="file"

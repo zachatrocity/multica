@@ -11,9 +11,6 @@ export const mockUser: User = {
   avatar_url: null,
   onboarded_at: "2026-01-01T00:00:00Z",
   onboarding_questionnaire: {},
-  // Matches real server behavior for anyone who onboarded before this
-  // field shipped — migration 054 backfills 'skipped_legacy'.
-  starter_content_state: "skipped_legacy",
   language: null,
   timezone: null,
   profile_description: "",
@@ -65,6 +62,8 @@ export const mockAgents: Agent[] = [
     runtime_config: {},
     custom_args: [],
     visibility: "workspace",
+    permission_mode: "public_to",
+    invocation_targets: [{ target_type: "workspace", target_id: null }],
     max_concurrent_tasks: 3,
     model: "",
     owner_id: null,

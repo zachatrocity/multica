@@ -6,7 +6,6 @@ import (
 	"os"
 	"strconv"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,7 +31,7 @@ func runSquadList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	var squads []map[string]any
@@ -86,7 +85,7 @@ func runSquadGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	var squad map[string]any
@@ -133,7 +132,7 @@ func runSquadCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	leaderID, err := resolveAgent(ctx, client, leader)
@@ -176,7 +175,7 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	body := map[string]any{}
@@ -236,7 +235,7 @@ func runSquadDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	if err := client.DeleteJSON(ctx, "/api/squads/"+args[0]); err != nil {
@@ -270,7 +269,7 @@ func runSquadMemberList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	var members []map[string]any
@@ -322,7 +321,7 @@ func runSquadMemberAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	body := map[string]any{
@@ -372,7 +371,7 @@ func runSquadMemberSetRole(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	body := map[string]any{
@@ -418,7 +417,7 @@ func runSquadMemberRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	body := map[string]any{
@@ -451,7 +450,13 @@ Outcome must be one of:
   failed     — leader encountered an error
 
 This command is intended to be called by squad leader agents after each
-trigger to record their decision in the issue timeline.`,
+trigger to record their decision in the issue timeline.
+
+Pass the issue the current turn is running on. That issue does not need to
+be assigned to your squad — authorization comes from the leader task itself,
+so @squad mentions on an individually owned issue and leader tasks bound to a
+child issue both record fine. A leader woken by a stage barrier runs on the
+parent issue, so record against the parent.`,
 	Args: exactArgs(2),
 	RunE: runSquadActivity,
 }
@@ -471,7 +476,7 @@ func runSquadActivity(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	issueRef, err := resolveIssueRef(ctx, client, issueID)

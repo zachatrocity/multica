@@ -2,6 +2,7 @@
 
 import { createContext, use, useMemo, type ReactNode } from "react";
 import type { Attachment } from "@multica/core/types";
+import { matchAttachmentByURL } from "@multica/core/attachments/image-sequence";
 import { openExternal } from "../platform";
 import { useDownloadAttachment } from "./use-download-attachment";
 
@@ -31,30 +32,36 @@ interface ProviderProps {
  * Provides a click-time download handler to Tiptap NodeViews mounted inside
  * `ContentEditor`. Without a provider the consumer falls back to opening the
  * raw URL via `openExternal` — same behaviour as before this hook existed.
+ *
+ * URL → attachment matching has two fallbacks (in order). New comments
+ * (post-MUL-3130) persist the stable `/api/attachments/<id>/download`
+ * shape; legacy comments persist whatever was in `att.url` at upload
+ * time, including the short-lived `/uploads/<key>?exp&sig` pattern that
+ * triggered MUL-3130. The id-from-URL extractor handles new content;
+ * exact-url equality covers legacy and S3/CloudFront markdown that
+ * never got the new shape.
  */
 export function AttachmentDownloadProvider({ attachments, children }: ProviderProps) {
   const download = useDownloadAttachment();
   const value = useMemo<ResolvedDownload>(
-    () => ({
-      resolveAttachmentId: (url) => {
-        if (!url || !attachments?.length) return undefined;
-        return attachments.find((a) => a.url === url)?.id;
-      },
-      resolveAttachment: (url) => {
-        if (!url || !attachments?.length) return undefined;
-        return attachments.find((a) => a.url === url);
-      },
-      openByUrl: (url) => {
-        const att = url && attachments?.length
-          ? attachments.find((a) => a.url === url)
-          : undefined;
-        if (att) {
-          download(att.id);
-          return;
-        }
-        if (url) openExternal(url);
-      },
-    }),
+    () => {
+      // Shared with the gallery sequence builder (MUL-5752) so a markdown URL
+      // can never resolve to one record here and a different one there.
+      const lookup = (url: string): Attachment | undefined =>
+        matchAttachmentByURL(url, attachments);
+      return {
+        resolveAttachmentId: (url) => lookup(url)?.id,
+        resolveAttachment: lookup,
+        openByUrl: (url) => {
+          const att = lookup(url);
+          if (att) {
+            download(att.id);
+            return;
+          }
+          if (url) openExternal(url);
+        },
+      };
+    },
     [attachments, download],
   );
   return (

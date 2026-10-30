@@ -1,11 +1,12 @@
 import globals from "globals";
 import reactConfig from "@multica/eslint-config/react";
+import { ICON_LIBRARY_IMPORT_PATTERNS } from "@multica/eslint-config/base";
 
 export default [
   ...reactConfig,
   { ignores: ["out/", "dist/"] },
   {
-    files: ["scripts/**/*.{mjs,js}"],
+    files: ["scripts/**/*.{mjs,js,cjs}"],
     languageOptions: {
       globals: { ...globals.node },
     },
@@ -39,6 +40,42 @@ export default [
     files: ["src/main/external-url.ts"],
     rules: {
       "no-restricted-syntax": "off",
+    },
+  },
+  // Navigation boundary (MUL-4741): the tab Coordinator must be the only
+  // navigation initiator — a Router location change without a Coordinator
+  // token is a protocol error. Application code must not navigate directly;
+  // it goes through the navigation adapter / Coordinator in src/platform.
+  // Remaining legacy sites carry an inline eslint-disable tagged MUL-4741;
+  // the Phase 2 migration removes them one by one, and this rule holding
+  // with zero disables is the machine check that the migration is complete.
+  {
+    files: ["src/renderer/src/**/*.{ts,tsx}"],
+    ignores: ["src/renderer/src/platform/**", "src/renderer/src/**/*.test.*"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "react-router-dom",
+              importNames: ["useNavigate", "Navigate"],
+              message:
+                "Direct navigation from application code breaks the Coordinator protocol (MUL-4741). Use the navigation adapter from src/platform instead.",
+            },
+          ],
+          patterns: ICON_LIBRARY_IMPORT_PATTERNS,
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.object.name='router'][callee.property.name='navigate']",
+          message:
+            "Direct router.navigate from application code breaks the Coordinator protocol (MUL-4741). Route it through the navigation adapter in src/platform.",
+        },
+      ],
     },
   },
 ];

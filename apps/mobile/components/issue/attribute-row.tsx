@@ -23,6 +23,7 @@ import type {
   Issue,
   IssuePriority,
 } from "@multica/core/types";
+import { formatDateOnly } from "@multica/core/issues/date";
 import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
@@ -32,16 +33,15 @@ import { AttributeChip } from "./attribute-chip";
 import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import {
-  STATUS_LABEL,
-  PRIORITY_LABEL as PRIORITY_FULL_LABEL,
-} from "@/lib/issue-status";
+import { PRIORITY_LABEL as PRIORITY_FULL_LABEL } from "@/lib/issue-status";
+import { useIssueStatuses } from "@/lib/use-issue-statuses";
+import { i18n, useT } from "@/lib/i18n";
 
 // Chip placeholder shortens `none` from "No priority" → "Priority" so the
 // unset chip reads as a placeholder, not as a confusing assigned value.
 const PRIORITY_CHIP_LABEL: Record<IssuePriority, string> = {
   ...PRIORITY_FULL_LABEL,
-  none: "Priority",
+  none: "issues:filters.priority",
 };
 
 /**
@@ -67,17 +67,28 @@ const ISSUE_PICKER_PATHNAMES = {
   "due-date": "/[workspace]/issue/[id]/picker/due-date",
 } as const satisfies Record<IssuePickerField, string>;
 
+// due_date is a calendar day — format timezone-safely so the day never shifts
+// with the viewer's offset. Mirrors web's formatDate in list-row/board-card.
 function formatDueDate(iso: string | null): string | null {
   if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return (
+    formatDateOnly(
+      iso,
+      { month: "short", day: "numeric" },
+      i18n.resolvedLanguage ?? i18n.language,
+    ) || null
+  );
 }
 
 export function AttributeRow({ issue }: { issue: Issue }) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { getName } = useActorLookup();
+  const { t } = useT("issues");
+  // The chip shows the issue's own status, which may be a custom one — name
+  // and colour come from the workspace catalog, the glyph from its category.
+  // (MUL-6243)
+  const { categoryOf, colorOf, labelOf, iconOf } = useIssueStatuses();
 
   // Project read-only — fetch list to look up the title + icon. Cheap
   // (cached after first issue-detail visit).
@@ -111,8 +122,15 @@ export function AttributeRow({ issue }: { issue: Issue }) {
     <View className="flex-row flex-wrap gap-2">
       {/* Status — always shown */}
       <AttributeChip
-        icon={<StatusIcon status={issue.status} size={14} />}
-        label={STATUS_LABEL[issue.status]}
+        icon={
+          <StatusIcon
+            status={issue.status}
+            category={categoryOf(issue.status)}
+            icon={iconOf(issue.status)} color={colorOf(issue.status)}
+            size={14}
+          />
+        }
+        label={labelOf(issue.status)}
         variant="filled"
         onPress={() => openPicker("status")}
       />
@@ -120,7 +138,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Priority */}
       <AttributeChip
         icon={<PriorityIcon priority={issue.priority} size={14} />}
-        label={PRIORITY_CHIP_LABEL[issue.priority]}
+        label={t(PRIORITY_CHIP_LABEL[issue.priority])}
         variant={issue.priority === "none" ? "dimmed" : "filled"}
         onPress={() => openPicker("priority")}
       />
@@ -136,7 +154,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
               showPresence
             />
           }
-          label={assigneeName ?? "Unknown"}
+          label={assigneeName ?? t("picker.unknown")}
           variant="filled"
           onPress={() => openPicker("assignee")}
         />
@@ -145,7 +163,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
           icon={
             <View className="size-4 rounded-full border border-dashed border-muted-foreground/40" />
           }
-          label="Assignee"
+          label={t("filters.assignee")}
           variant="dimmed"
           onPress={() => openPicker("assignee")}
         />
@@ -172,7 +190,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {labels.length === 0 ? (
         <AttributeChip
           icon={<Text className="text-xs text-muted-foreground/70">◯</Text>}
-          label="Label"
+          label={t("filters.label")}
           variant="dimmed"
           onPress={() => openPicker("label")}
         />
@@ -191,7 +209,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
           icon={
             <View className="size-3.5 rounded-sm border border-dashed border-muted-foreground/40" />
           }
-          label="Project"
+          label={t("filters.project")}
           variant="dimmed"
           onPress={() => openPicker("project")}
         />
@@ -200,7 +218,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Due date */}
       <AttributeChip
         icon={<Text className="text-xs text-muted-foreground/80">📅</Text>}
-        label={dueLabel ?? "Due date"}
+        label={dueLabel ?? t("common:fields.due_date")}
         variant={dueLabel ? "filled" : "dimmed"}
         onPress={() => openPicker("due-date")}
       />

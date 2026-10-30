@@ -30,27 +30,30 @@ import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import type { Workspace } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
+import { WorkspaceAvatar } from "@/components/workspace/workspace-avatar";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export default function SwitchWorkspaceRoute() {
   const activeSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { colorScheme } = useColorScheme();
-  const t = THEME[colorScheme];
+  const theme = THEME[colorScheme];
   const { data, isLoading } = useQuery(workspaceListOptions());
+  const { t } = useT("workspace");
 
   const onSelect = (ws: Workspace) => {
     if (ws.slug === activeSlug) return;
     Alert.alert(
-      "切换工作区",
-      `确定切换到 "${ws.name}"?`,
+      t("switch.title"),
+      t("switch.message", { name: ws.name }),
       [
-        { text: "取消", style: "cancel" },
+        { text: t("common:actions.cancel"), style: "cancel" },
         {
-          text: "切换",
+          text: t("switch.confirm"),
           onPress: () => {
             router.dismiss();
             router.replace(`/${ws.slug}/inbox`);
@@ -64,7 +67,7 @@ export default function SwitchWorkspaceRoute() {
     <View className="flex-1">
       <View className="px-4 pt-4 pb-3">
         <Text className="text-base font-semibold text-foreground">
-          切换工作区
+          {t("switch.title")}
         </Text>
       </View>
       {isLoading ? (
@@ -79,8 +82,7 @@ export default function SwitchWorkspaceRoute() {
               workspace={ws}
               active={ws.slug === activeSlug}
               onPress={() => onSelect(ws)}
-              iconTint={t.foreground}
-              mutedIconTint={t.mutedForeground}
+              iconTint={theme.foreground}
             />
           ))}
         </ScrollView>
@@ -94,32 +96,31 @@ function WorkspaceRow({
   active,
   onPress,
   iconTint,
-  mutedIconTint,
 }: {
   workspace: Workspace;
   active: boolean;
   onPress: () => void;
   iconTint: string;
-  mutedIconTint: string;
 }) {
+  const { t } = useT("workspace");
   return (
     <Pressable
       onPress={onPress}
       disabled={active}
       accessibilityLabel={
         active
-          ? `${workspace.name}, 当前工作区`
-          : `切换到 ${workspace.name}`
+          ? t("switch.current_a11y", { name: workspace.name })
+          : t("switch.switch_a11y", { name: workspace.name })
       }
       className={cn(
         "flex-row items-center gap-3 px-4 py-3 active:bg-secondary",
         active && "opacity-100",
       )}
     >
-      <ExpoImage
-        source="sf:building.2"
-        tintColor={active ? iconTint : mutedIconTint}
-        style={{ width: 18, height: 18 }}
+      <WorkspaceAvatar
+        name={workspace.name}
+        avatarUrl={workspace.avatar_url}
+        size={24}
       />
       <Text
         className={cn(

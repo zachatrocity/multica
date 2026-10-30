@@ -15,6 +15,13 @@ const TEST_RESOURCES = {
 const mockResolveRuntimeLocalSkillImport = vi.hoisted(() => vi.fn());
 const mockRuntimeListOptions = vi.hoisted(() => vi.fn());
 const mockRuntimeLocalSkillsOptions = vi.hoisted(() => vi.fn());
+const mockListMembers = vi.hoisted(() => vi.fn());
+
+vi.mock("@multica/core/api", () => ({
+  api: {
+    listMembers: (...args: unknown[]) => mockListMembers(...args),
+  },
+}));
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
@@ -29,22 +36,50 @@ vi.mock("@multica/core/auth", () => {
   return { useAuthStore };
 });
 
-vi.mock("@multica/core/runtimes", () => ({
-  runtimeListOptions: (...args: unknown[]) => mockRuntimeListOptions(...args),
-  runtimeLocalSkillsOptions: (...args: unknown[]) =>
-    mockRuntimeLocalSkillsOptions(...args),
-  runtimeLocalSkillsKeys: {
-    forRuntime: (runtimeId: string) => ["runtimes", "local-skills", runtimeId],
-  },
-  resolveRuntimeLocalSkillImport: (...args: unknown[]) =>
-    mockResolveRuntimeLocalSkillImport(...args),
-}));
+// Spread the real module so alias helpers (runtimeDisplayLabel) and the
+// machine-grouping helpers used transitively by buildRuntimeMachines
+// (deriveRuntimeHealth) stay real; only the data/import entrypoints are mocked.
+vi.mock("@multica/core/runtimes", async () => {
+  const actual =
+    await vi.importActual<typeof import("@multica/core/runtimes")>(
+      "@multica/core/runtimes",
+    );
+  return {
+    ...actual,
+    runtimeListOptions: (...args: unknown[]) => mockRuntimeListOptions(...args),
+    runtimeLocalSkillsOptions: (...args: unknown[]) =>
+      mockRuntimeLocalSkillsOptions(...args),
+    runtimeLocalSkillsKeys: {
+      forRuntime: (runtimeId: string) => [
+        "runtimes",
+        "local-skills",
+        runtimeId,
+      ],
+    },
+    resolveRuntimeLocalSkillImport: (...args: unknown[]) =>
+      mockResolveRuntimeLocalSkillImport(...args),
+  };
+});
 
 vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
     success: vi.fn(),
   },
+}));
+
+vi.mock("motion/react", () => ({
+  AnimatePresence: ({ children }: { children: ReactNode }) => children,
+  motion: {
+    div: ({
+      children,
+      className,
+    }: {
+      children: ReactNode;
+      className?: string;
+    }) => <div className={className}>{children}</div>,
+  },
+  useReducedMotion: () => true,
 }));
 
 import { RuntimeLocalSkillImportPanel } from "./runtime-local-skill-import-panel";
@@ -148,8 +183,13 @@ describe("RuntimeLocalSkillImportPanel", () => {
         }),
     });
     mockResolveRuntimeLocalSkillImport.mockResolvedValue({
+      status: "created",
       skill: MOCK_IMPORTED_SKILL_A,
     });
+    mockListMembers.mockResolvedValue([
+      { user_id: "user-1", name: "Alice", email: "alice@example.com" },
+      { user_id: "user-2", name: "Bob", email: "bob@example.com" },
+    ]);
   });
 
   it("imports a single skill when selected via checkbox", async () => {
@@ -183,11 +223,35 @@ describe("RuntimeLocalSkillImportPanel", () => {
             skill_key: "review-helper",
             name: "Review Helper",
             description: "Review pull requests",
+            supports_conflict: true,
           },
         );
       },
       { timeout: 5000 },
     );
+  });
+
+  it("surfaces the runtime alias and provider in the picker, not the raw daemon name (MUL-5248)", async () => {
+    mockRuntimeListOptions.mockReturnValue({
+      queryKey: ["runtimes", "ws-1", "list"],
+      queryFn: () =>
+        Promise.resolve([{ ...MOCK_RUNTIME, custom_name: "Dev Box" }]),
+    });
+
+    renderPanel();
+
+    // The selected-runtime summary surfaces the user's alias plus the provider
+    // ("Dev Box (Claude)"). The old flat label duplicated the provider as
+    // "Claude (MacBook) (claude)" and dropped the alias entirely.
+    const labels = await screen.findAllByText(
+      "Dev Box (Claude)",
+      {},
+      { timeout: 5000 },
+    );
+    expect(labels.length).toBeGreaterThan(0);
+    expect(
+      screen.queryByText("Claude (MacBook) (claude)"),
+    ).not.toBeInTheDocument();
   });
 
   it("imports multiple skills in sequence and shows summary", async () => {
@@ -200,8 +264,8 @@ describe("RuntimeLocalSkillImportPanel", () => {
         }),
     });
     mockResolveRuntimeLocalSkillImport
-      .mockResolvedValueOnce({ skill: MOCK_IMPORTED_SKILL_A })
-      .mockResolvedValueOnce({ skill: MOCK_IMPORTED_SKILL_B });
+      .mockResolvedValueOnce({ status: "created", skill: MOCK_IMPORTED_SKILL_A })
+      .mockResolvedValueOnce({ status: "created", skill: MOCK_IMPORTED_SKILL_B });
 
     renderPanel();
 
@@ -240,8 +304,123 @@ describe("RuntimeLocalSkillImportPanel", () => {
 
     expect(mockResolveRuntimeLocalSkillImport).toHaveBeenCalledTimes(2);
 
-    // Verify summary shows both as imported
-    expect(screen.getByText("Imported")).toBeInTheDocument();
+    // Verify summary shows both as created
+    expect(screen.getByText("Created")).toBeInTheDocument();
+  });
+
+  it("filters local runtime skills and selects only visible matches", async () => {
+    mockRuntimeLocalSkillsOptions.mockReturnValue({
+      queryKey: ["runtimes", "local-skills", "runtime-1"],
+      queryFn: () =>
+        Promise.resolve({
+          supported: true,
+          skills: [MOCK_SKILL_A, MOCK_SKILL_B],
+        }),
+    });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Code Gen")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search local skills"), {
+      target: { value: "code" },
+    });
+
+    expect(screen.queryByText("Review Helper")).not.toBeInTheDocument();
+    // "Code Gen" survives the filter; its matched substring is now wrapped in a
+    // highlight <mark>, so the row's name text is split across nodes.
+    expect(screen.getByText("Code", { selector: "mark" })).toBeInTheDocument();
+    expect(screen.getByText("Select all (1)")).toBeInTheDocument();
+
+    const selectAllCheckbox = screen
+      .getByText(/Select all/i)
+      .closest("label")!
+      .querySelector("input[type='checkbox']")!;
+    fireEvent.click(selectAllCheckbox);
+
+    const importButton = screen.getByRole("button", {
+      name: /Import to Workspace/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    await waitFor(
+      () => {
+        expect(mockResolveRuntimeLocalSkillImport).toHaveBeenCalledTimes(1);
+        expect(mockResolveRuntimeLocalSkillImport).toHaveBeenCalledWith(
+          "runtime-1",
+          {
+            skill_key: "code-gen",
+            name: "Code Gen",
+            description: "Generate code from specs",
+            supports_conflict: true,
+          },
+        );
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  it("highlights the matched substring in search results", async () => {
+    mockRuntimeLocalSkillsOptions.mockReturnValue({
+      queryKey: ["runtimes", "local-skills", "runtime-1"],
+      queryFn: () =>
+        Promise.resolve({
+          supported: true,
+          skills: [MOCK_SKILL_A, MOCK_SKILL_B],
+        }),
+    });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search local skills"), {
+      target: { value: "code" },
+    });
+
+    // The surviving row's name has its matched substring wrapped in a <mark>,
+    // so the user can see why the result matched.
+    const nameMark = screen.getByText("Code", { selector: "mark" });
+    expect(nameMark.tagName).toBe("MARK");
+    // The description and path also matched "code", each highlighted too.
+    expect(screen.getAllByText("code", { selector: "mark" }).length).toBe(2);
+    // The non-matching row is gone, so no stray highlights leak from it.
+    expect(screen.queryByText("Review Helper")).not.toBeInTheDocument();
+  });
+
+  it("shows an empty search state when no local skills match", async () => {
+    mockRuntimeLocalSkillsOptions.mockReturnValue({
+      queryKey: ["runtimes", "local-skills", "runtime-1"],
+      queryFn: () =>
+        Promise.resolve({
+          supported: true,
+          skills: [MOCK_SKILL_A, MOCK_SKILL_B],
+        }),
+    });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search local skills"), {
+      target: { value: "terraform" },
+    });
+
+    expect(
+      screen.getByText('No local skills match "terraform".'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Review Helper")).not.toBeInTheDocument();
+    expect(screen.queryByText("Code Gen")).not.toBeInTheDocument();
   });
 
   it("handles partial failures gracefully", async () => {
@@ -254,7 +433,7 @@ describe("RuntimeLocalSkillImportPanel", () => {
         }),
     });
     mockResolveRuntimeLocalSkillImport
-      .mockResolvedValueOnce({ skill: MOCK_IMPORTED_SKILL_A })
+      .mockResolvedValueOnce({ status: "created", skill: MOCK_IMPORTED_SKILL_A })
       .mockRejectedValueOnce(new Error("409 conflict: already exists"));
 
     renderPanel();
@@ -291,8 +470,8 @@ describe("RuntimeLocalSkillImportPanel", () => {
       { timeout: 10000 },
     );
 
-    // Summary should show imported and skipped
-    expect(screen.getByText("Imported")).toBeInTheDocument();
+    // Summary should show created and skipped
+    expect(screen.getByText("Created")).toBeInTheDocument();
     expect(screen.getByText("Skipped")).toBeInTheDocument();
   });
 
@@ -344,8 +523,8 @@ describe("RuntimeLocalSkillImportPanel", () => {
         }),
     });
     mockResolveRuntimeLocalSkillImport
-      .mockResolvedValueOnce({ skill: MOCK_IMPORTED_SKILL_A })
-      .mockResolvedValueOnce({ skill: MOCK_IMPORTED_SKILL_B });
+      .mockResolvedValueOnce({ status: "created", skill: MOCK_IMPORTED_SKILL_A })
+      .mockResolvedValueOnce({ status: "created", skill: MOCK_IMPORTED_SKILL_B });
 
     const onImported = vi.fn();
     const onBulkDone = vi.fn();
@@ -384,5 +563,276 @@ describe("RuntimeLocalSkillImportPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Done/i }));
     expect(onBulkDone).toHaveBeenCalledTimes(1);
     expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it("resolves a creator conflict by overwriting the existing skill", async () => {
+    mockResolveRuntimeLocalSkillImport
+      .mockResolvedValueOnce({
+        status: "conflict",
+        conflict: {
+          existing_skill_id: "existing-skill-1",
+          existing_created_by: "user-1",
+          can_overwrite: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: "updated",
+        skill: {
+          ...MOCK_IMPORTED_SKILL_A,
+          id: "existing-skill-1",
+        },
+      });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review Helper/i }));
+
+    const importButton = screen.getByRole("button", {
+      name: /Import to Workspace/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    expect(
+      await screen.findByText(/A skill with this name already exists/i),
+    ).toBeInTheDocument();
+
+    const applyButton = screen.getByRole("button", {
+      name: /Apply decisions/i,
+    });
+    await waitFor(() => expect(applyButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(applyButton);
+
+    await waitFor(
+      () => {
+        expect(mockResolveRuntimeLocalSkillImport).toHaveBeenLastCalledWith(
+          "runtime-1",
+          {
+            skill_key: "review-helper",
+            name: "Review Helper",
+            description: "Review pull requests",
+            supports_conflict: true,
+            action: "overwrite",
+            target_skill_id: "existing-skill-1",
+          },
+        );
+      },
+      { timeout: 5000 },
+    );
+
+    expect(await screen.findByText("Updated")).toBeInTheDocument();
+  });
+
+  it("applies a single creator conflict when clicking overwrite", async () => {
+    mockResolveRuntimeLocalSkillImport
+      .mockResolvedValueOnce({
+        status: "conflict",
+        conflict: {
+          existing_skill_id: "existing-skill-1",
+          existing_created_by: "user-1",
+          can_overwrite: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: "updated",
+        skill: {
+          ...MOCK_IMPORTED_SKILL_A,
+          id: "existing-skill-1",
+        },
+      });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review Helper/i }));
+
+    const importButton = screen.getByRole("button", {
+      name: /Import to Workspace/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    expect(
+      await screen.findByText(/A skill with this name already exists/i),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Overwrite$/i }));
+
+    await waitFor(
+      () => {
+        expect(mockResolveRuntimeLocalSkillImport).toHaveBeenLastCalledWith(
+          "runtime-1",
+          {
+            skill_key: "review-helper",
+            name: "Review Helper",
+            description: "Review pull requests",
+            supports_conflict: true,
+            action: "overwrite",
+            target_skill_id: "existing-skill-1",
+          },
+        );
+      },
+      { timeout: 5000 },
+    );
+
+    expect(await screen.findByText("Updated")).toBeInTheDocument();
+  });
+
+  it("keeps bulk completion behavior when conflict resolution leaves one success", async () => {
+    mockRuntimeLocalSkillsOptions.mockReturnValue({
+      queryKey: ["runtimes", "local-skills", "runtime-1"],
+      queryFn: () =>
+        Promise.resolve({
+          supported: true,
+          skills: [MOCK_SKILL_A, MOCK_SKILL_B],
+        }),
+    });
+    mockResolveRuntimeLocalSkillImport
+      .mockResolvedValueOnce({
+        status: "conflict",
+        conflict: {
+          existing_skill_id: "existing-skill-1",
+          existing_created_by: "user-1",
+          can_overwrite: true,
+        },
+      })
+      .mockRejectedValueOnce(new Error("daemon failed"))
+      .mockResolvedValueOnce({
+        status: "updated",
+        skill: {
+          ...MOCK_IMPORTED_SKILL_A,
+          id: "existing-skill-1",
+        },
+      });
+
+    const onImported = vi.fn();
+    const onBulkDone = vi.fn();
+    renderPanel({ onImported, onBulkDone });
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    const selectAllLabel = screen.getByText(/Select all/i);
+    const selectAllCheckbox = selectAllLabel
+      .closest("label")!
+      .querySelector("input[type='checkbox']")!;
+    fireEvent.click(selectAllCheckbox);
+
+    const importButton = screen.getByRole("button", {
+      name: /Import 2 Skills/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    expect(
+      await screen.findByText(/A skill with this name already exists/i),
+    ).toBeInTheDocument();
+
+    const applyButton = screen.getByRole("button", {
+      name: /Apply decisions/i,
+    });
+    await waitFor(() => expect(applyButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(applyButton);
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole("button", { name: /Done/i }),
+        ).toBeInTheDocument();
+      },
+      { timeout: 10000 },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Done/i }));
+    expect(onBulkDone).toHaveBeenCalledTimes(1);
+    expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it("renders the creator's display name for non-overwritable conflicts", async () => {
+    mockResolveRuntimeLocalSkillImport.mockResolvedValueOnce({
+      status: "conflict",
+      conflict: {
+        existing_skill_id: "existing-skill-1",
+        existing_created_by: "user-2",
+        can_overwrite: false,
+      },
+    });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review Helper/i }));
+    const importButton = screen.getByRole("button", {
+      name: /Import to Workspace/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    // Bob is user-2 in the mocked member list. The locked message must show
+    // the resolved name, never the raw UUID.
+    expect(
+      await screen.findByText(/created by Bob/i, {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/user-2/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the unbranded locked message when the creator left the workspace", async () => {
+    mockResolveRuntimeLocalSkillImport.mockResolvedValueOnce({
+      status: "conflict",
+      conflict: {
+        existing_skill_id: "existing-skill-1",
+        existing_created_by: "user-gone",
+        can_overwrite: false,
+      },
+    });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review Helper/i }));
+    const importButton = screen.getByRole("button", {
+      name: /Import to Workspace/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    // user-gone is not in the workspace; the UI must not leak the UUID and
+    // should render the no-creator variant of the message.
+    expect(
+      await screen.findByText(
+        /Only the creator can overwrite this skill/i,
+        {},
+        { timeout: 5000 },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/user-gone/)).not.toBeInTheDocument();
   });
 });

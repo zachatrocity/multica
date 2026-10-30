@@ -22,7 +22,6 @@
 import type { RefObject } from "react";
 import StarterKit from "@tiptap/starter-kit";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
-import { common, createLowlight } from "lowlight";
 import Placeholder from "@tiptap/extension-placeholder";
 import Link from "@tiptap/extension-link";
 import Typography from "@tiptap/extension-typography";
@@ -31,34 +30,44 @@ import TableRow from "@tiptap/extension-table-row";
 import TableHeader from "@tiptap/extension-table-header";
 import TableCell from "@tiptap/extension-table-cell";
 import { Table } from "@tiptap/extension-table";
+import { TaskList } from "@tiptap/extension-list";
 import { Markdown } from "@tiptap/markdown";
 import { ReactNodeViewRenderer } from "@tiptap/react";
 import type { AnyExtension } from "@tiptap/core";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
+import { shouldAutoLink } from "@multica/ui/markdown";
 import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
 import { BaseMentionExtension } from "./mention-extension";
-import { createMentionSuggestion } from "./mention-suggestion";
+import { createMentionSuggestion, type MentionItem } from "./mention-suggestion";
+import {
+  createIssueIdentifierAutolinkExtension,
+  type IssueIdentifierResolver,
+} from "./issue-identifier-autolink";
 import { SlashCommandExtension } from "./slash-command-extension";
-import { createSlashCommandSuggestion } from "./slash-command-suggestion";
+import { createSlashCommandSuggestion, createBuiltinCommandSuggestion } from "./slash-command-suggestion";
+import type { BuiltinCommandSuggestionOptions } from "./slash-command-suggestion";
+import { SuggestionTriggerArmingExtension } from "./suggestion-trigger-arming";
 import { CodeBlockView } from "./code-block-view";
-import { PatchedListItem } from "./list-item";
+import { TableView } from "./table-view";
+import { RICH_TABLE_CHROME_ATTRIBUTE } from "../../rich-content/rich-table";
+import { PatchedListItem, PatchedTaskItem } from "./list-item";
 import { createMarkdownPasteExtension } from "./markdown-paste";
 import { createMarkdownCopyExtension } from "./markdown-copy";
-import { createSubmitExtension } from "./submit-shortcut";
 import { createBlurShortcutExtension } from "./blur-shortcut";
+import { createSubmitShortcutExtension } from "./submit-shortcut";
 import { createFileUploadExtension } from "./file-upload";
 import { FileCardExtension } from "./file-card";
 import { ImageView } from "./image-view";
 import { BlockMathExtension, InlineMathExtension } from "./math";
 import { HighlightExtension } from "./highlight";
-
-const lowlight = createLowlight(common);
+import { codeLowlight } from "../syntax-highlight";
 
 const LinkExtension = Link.extend({ inclusive: false }).configure({
   openOnClick: false,
   autolink: true,
   linkOnPaste: true,
   defaultProtocol: "https",
+  shouldAutoLink,
 });
 
 export const ImageExtension = Image.extend({
@@ -71,6 +80,38 @@ export const ImageExtension = Image.extend({
           attrs.uploading ? { "data-uploading": "" } : {},
         parseHTML: (el: HTMLElement) => el.hasAttribute("data-uploading"),
       },
+      // The upload this placeholder belongs to — the same value the draft
+      // store knows as `clientUploadId`. Lets a settle arriving at a mount
+      // that did not start the upload find the node to replace. Render-only,
+      // and cleared once the node holds a real URL.
+      uploadId: {
+        default: null,
+        rendered: false,
+      },
+      // Intrinsic pixel dimensions, captured on upload (file-upload.ts). The
+      // browser uses width/height on <img> to compute aspect-ratio and reserve
+      // the box before the image decodes, so inserting an image causes no
+      // layout shift (and the post-insert scrollIntoView stays correct). Not
+      // serialized to markdown — `renderMarkdown` only emits src/alt/title — so
+      // round-trips stay clean.
+      width: {
+        default: null,
+        renderHTML: (attrs: Record<string, unknown>) =>
+          attrs.width ? { width: attrs.width as number } : {},
+        parseHTML: (el: HTMLElement) => {
+          const w = parseInt(el.getAttribute("width") || "", 10);
+          return Number.isFinite(w) ? w : null;
+        },
+      },
+      height: {
+        default: null,
+        renderHTML: (attrs: Record<string, unknown>) =>
+          attrs.height ? { height: attrs.height as number } : {},
+        parseHTML: (el: HTMLElement) => {
+          const h = parseInt(el.getAttribute("height") || "", 10);
+          return Number.isFinite(h) ? h : null;
+        },
+      },
     };
   },
   addNodeView() {
@@ -78,12 +119,17 @@ export const ImageExtension = Image.extend({
   },
   renderMarkdown: (node: any) => {
     const src = node.attrs?.src || "";
+    // Same rule as fileCard: an in-flight placeholder is not content. Its src
+    // is a process-local `blob:` URL that expires on reload, so emitting it
+    // would put a dead link in the persisted draft. This replaces the
+    // after-the-fact regex scrub ContentEditor used to run on every serialise.
+    if (node.attrs?.uploading === true || !src) return "";
     const alt = escapeMarkdownLabel(node.attrs?.alt || "");
     const title = node.attrs?.title;
     if (title) {
-      return `![${alt}](${src} "${title}")\n\n`;
+      return `![${alt}](${src} "${title}")`;
     }
-    return `![${alt}](${src})\n\n`;
+    return `![${alt}](${src})`;
   },
 }).configure({
   inline: false,
@@ -91,14 +137,25 @@ export const ImageExtension = Image.extend({
 });
 
 export interface EditorExtensionsOptions {
-  placeholder?: string;
+  /**
+   * Placeholder text, or a getter for it. Prefer a getter when the value can
+   * change over the editor's lifetime: Tiptap's Placeholder snapshots a string
+   * option at mount, but re-invokes a function every time it recomputes its
+   * decorations — so a getter (paired with an empty-transaction nudge) lets the
+   * placeholder update live without remounting the editor. See ContentEditor.
+   */
+  placeholder?: string | (() => string);
   queryClient?: import("@tanstack/react-query").QueryClient;
   onSubmitRef?: RefObject<(() => void) | undefined>;
   onUploadFileRef?: RefObject<
-    ((file: File) => Promise<UploadResult | null>) | undefined
+    ((file: File, uploadId: string) => Promise<UploadResult | null>) | undefined
   >;
-  /** When true, bare Enter also submits (chat-style). Default false. */
-  submitOnEnter?: boolean;
+  /**
+   * Character count above which a plain-text paste becomes a .txt attachment
+   * instead of document text. A ref so the value can change without
+   * recreating the editor. Omitted (the default) keeps every paste as text.
+   */
+  pasteAsFileThresholdRef?: RefObject<number | undefined>;
   /**
    * When true, the `@` suggestion picker is not attached. The mention node
    * type is still registered in the schema so any mention pasted in from
@@ -108,8 +165,32 @@ export interface EditorExtensionsOptions {
    * system prompts) but *preserving* an existing one still matters.
    */
   disableMentions?: boolean;
-  /** When true, attach the `/` skill picker. Default false. */
+  /** Override @ behavior for chat context suggestions. */
+  mentionMode?: "default" | "context";
+  getMentionContextItems?: () => MentionItem[];
+  /** When true, attach the `/` picker. Default false. */
   enableSlashCommands?: boolean;
+  /**
+   * Which `/` menu to attach when enableSlashCommands is true:
+   * - "skill" (default) — the chat picker listing the active agent's skills.
+   * - "command" — the fixed built-in command menu (issue comments), e.g. /note.
+   */
+  slashCommandMode?: "skill" | "command";
+  /**
+   * Quick actions offered in the "command" `/` menu, plus the resolver that
+   * turns a pick into the text it would post (MUL-5465). Both are functions so
+   * the editor is created once while still reading live data; the setup layer
+   * owns React Query access. Omit on composers with no issue context.
+   */
+  quickActionMenu?: BuiltinCommandSuggestionOptions;
+  /**
+   * Resolver for Linear-style bare issue-identifier autolinking. When present
+   * (and mentions are enabled), typing a boundary after `MUL-123` or pasting
+   * text with identifiers resolves them and swaps in real issue mentions. A
+   * ref so the editor is created once while the resolver reads live workspace
+   * context; the setup layer owns React Query + workspace access.
+   */
+  resolveIssueIdentifierRef?: RefObject<IssueIdentifierResolver | undefined>;
 }
 
 export function createEditorExtensions(
@@ -119,9 +200,23 @@ export function createEditorExtensions(
 
   return [
     StarterKit.configure({
-      heading: { levels: [1, 2, 3] },
+      // Every level Markdown can express. The Markdown parser keeps the source
+      // depth of `#`…`######`, but Heading.renderHTML falls back to `levels[0]`
+      // for any level it was not configured with — so `levels: [1, 2, 3]` made
+      // the editor draw every H4–H6 as an H1 (MUL-6060). The same list drives
+      // parseHTML, so it also decides whether a pasted `<h4>` survives as a
+      // heading. This is about rendering headings the content already has; the
+      // bubble menu still offers only H1–H3 as authoring choices.
+      heading: { levels: [1, 2, 3, 4, 5, 6] },
       link: false,
       codeBlock: false,
+      // Underline has no Markdown representation. Tiptap's extension serializes
+      // the mark as `++text++`, which is not CommonMark or GFM, so ReadonlyContent
+      // (react-markdown + remark-gfm) renders the delimiters literally. Disabling
+      // the extension drops the mark at parse time instead: pasted `<u>` /
+      // `text-decoration: underline` keep their text, and Cmd+U becomes a no-op
+      // rather than a way to produce content the display layer cannot render.
+      underline: false,
       // Disable StarterKit's stock ListItem — its Enter keybind binds only
       // `splitListItem`, which leaves the user stuck inside an empty top-level
       // list item (see list-item.ts). PatchedListItem below restores the
@@ -129,17 +224,40 @@ export function createEditorExtensions(
       listItem: false,
     }),
     PatchedListItem,
+    // Checkbox task lists: `- [ ]` / `- [x]`. TaskList + TaskItem ship their own
+    // markdown tokenizer / renderMarkdown, an input rule (typing `[] ` / `[x] `),
+    // and a checkbox NodeView. The taskList tokenizer is consulted before
+    // marked's built-in list tokenizer, so `- [ ]` becomes a task while a plain
+    // `- ` still falls through to PatchedListItem's bullet list.
+    TaskList,
+    PatchedTaskItem,
     CodeBlockLowlight.extend({
       addNodeView() {
         return ReactNodeViewRenderer(CodeBlockView);
       },
-    }).configure({ lowlight }),
+    }).configure({ lowlight: codeLowlight }),
     // ⚠️ Link MUST appear before markdownPaste in this array.
     // linkOnPaste relies on Link's handlePaste plugin firing first;
     // markdownPaste's handlePaste is a catch-all that returns true.
     LinkExtension,
     ImageExtension,
-    Table.configure({ resizable: false }),
+    // renderWrapper wraps the table in `<div class="tableWrapper">` (the same
+    // wrapper the resizable NodeView emits), which prose.css styles with
+    // `overflow-x: auto`. Without it a wide table is a bare <table> that can't
+    // shrink below min-content, so the horizontal scrollbar lands on the
+    // page-level scroll container instead of the table itself. That covers
+    // renderHTML; the editor itself draws TableView, the readonly tables' frame.
+    Table.extend({
+      addNodeView() {
+        return ReactNodeViewRenderer(TableView, {
+          contentDOMElementTag: "tbody",
+          // The frame's toolbar and resize handles are controls, not content.
+          stopEvent: ({ event }) =>
+            event.target instanceof Element &&
+            event.target.closest(`[${RICH_TABLE_CHROME_ATTRIBUTE}]`) !== null,
+        });
+      },
+    }).configure({ resizable: false, renderWrapper: true }),
     TableRow,
     TableHeader,
     TableCell,
@@ -152,34 +270,47 @@ export function createEditorExtensions(
     // so users can copy rich content out as the original Markdown.
     createMarkdownCopyExtension(),
     FileCardExtension,
+    // Must precede the mention and slash pickers: it supplies the "the user
+    // typed this trigger" signal their `shouldShow` reads (MUL-5429).
+    SuggestionTriggerArmingExtension,
     BaseMentionExtension.configure({
       HTMLAttributes: { class: "mention" },
       ...(options.disableMentions
         ? { suggestion: { allow: () => false } }
         : options.queryClient
-          ? { suggestion: createMentionSuggestion(options.queryClient) }
+          ? { suggestion: createMentionSuggestion(options.queryClient, { mode: options.mentionMode, getContextItems: options.getMentionContextItems }) }
           : {}),
     }),
+    // Linear-style bare identifier → issue mention. Attached only when a
+    // resolver is provided AND mention creation is enabled (an editor that
+    // suppresses new mentions should not synthesise them from identifiers).
+    ...(!options.disableMentions && options.resolveIssueIdentifierRef
+      ? [
+          createIssueIdentifierAutolinkExtension({
+            resolveRef: options.resolveIssueIdentifierRef,
+          }),
+        ]
+      : []),
     SlashCommandExtension.configure({
       HTMLAttributes: { class: "slash-command" },
-      suggestion:
-        options.enableSlashCommands && options.queryClient
-          ? createSlashCommandSuggestion(options.queryClient)
-          : { char: "/", allow: () => false },
+      suggestion: !options.enableSlashCommands
+        ? { char: "/", allow: () => false }
+        : options.slashCommandMode === "command"
+          ? createBuiltinCommandSuggestion(options.quickActionMenu)
+          : options.queryClient
+            ? createSlashCommandSuggestion(options.queryClient)
+            : { char: "/", allow: () => false },
     }),
     Typography,
     Placeholder.configure({ placeholder: placeholderText }),
     createMarkdownPasteExtension(),
-    createSubmitExtension(
-      () => {
-        const fn = options.onSubmitRef?.current;
-        if (!fn) return false; // no submit wired — let default Enter insert newline
-        fn();
-        return true;
-      },
-      { submitOnEnter: options.submitOnEnter ?? false },
-    ),
+    createSubmitShortcutExtension(() => {
+      const fn = options.onSubmitRef?.current;
+      if (!fn) return false;
+      fn();
+      return true;
+    }),
     createBlurShortcutExtension(),
-    createFileUploadExtension(options.onUploadFileRef!),
+    createFileUploadExtension(options.onUploadFileRef!, options.pasteAsFileThresholdRef),
   ];
 }

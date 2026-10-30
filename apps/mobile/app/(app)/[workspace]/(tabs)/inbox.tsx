@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import {
   Alert,
   FlatList,
@@ -34,9 +34,14 @@ import {
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
-import { deduplicateInboxItems } from "@/lib/inbox-display";
+import { useT } from "@/lib/i18n";
+import {
+  deduplicateInboxItems,
+  getInboxNavigationTarget,
+} from "@/lib/inbox-display";
 
 export default function Inbox() {
+  const { t } = useT("inbox");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { colorScheme } = useColorScheme();
@@ -56,7 +61,7 @@ export default function Inbox() {
   const archiveAllRead = useArchiveAllReadInbox();
   const archiveCompleted = useArchiveCompletedInbox();
 
-  const onPressItem = (item: InboxItem) => {
+  const onPressItem = useCallback((item: InboxItem) => {
     if (!item.read) {
       // Optimistic read flip lives in useMarkInboxRead.onMutate — fires
       // setQueryData synchronously before the cancelQueries await, so the
@@ -64,27 +69,18 @@ export default function Inbox() {
       // snapshot for the native stack push transition.
       markRead.mutate(item.id);
     }
-    if (item.issue_id && wsSlug) {
-      router.push({
-        pathname: "/[workspace]/issue/[id]",
-        params: {
-          workspace: wsSlug,
-          id: item.issue_id,
-          highlight: item.details?.comment_id,
-          h: String(Date.now()),
-        },
-      });
-    }
-  };
+    const target = getInboxNavigationTarget(item, wsSlug, String(Date.now()));
+    if (target) router.push(target);
+  }, [markRead, wsSlug]);
 
   const confirmArchiveAll = () => {
     Alert.alert(
-      "Archive all?",
-      "This archives every inbox item, read or unread. You can still find them via the issue pages.",
+      t("archive.confirm_title"),
+      t("archive.confirm_body"),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("common:actions.cancel"), style: "cancel" },
         {
-          text: "Archive all",
+          text: t("actions.archive_all"),
           style: "destructive",
           onPress: () => archiveAll.mutate(),
         },
@@ -95,7 +91,7 @@ export default function Inbox() {
   return (
     <View className="flex-1 bg-background">
       <Header
-        title="Inbox"
+        title={t("title")}
         right={
           <>
             <InboxActionsMenu
@@ -113,11 +109,12 @@ export default function Inbox() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load inbox:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {t("errors.load_failed", {
+              message: error instanceof Error ? error.message : "unknown",
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:actions.retry")}</Text>
           </Button>
         </View>
       ) : !data || data.length === 0 ? (
@@ -160,27 +157,29 @@ function InboxActionsMenu({
   onArchiveCompleted: () => void;
   onArchiveAll: () => void;
 }) {
+  const { t } = useT("inbox");
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <IconButton
           name="ellipsis-horizontal"
-          accessibilityLabel="Inbox actions"
+          accessibilityLabel={t("actions.inbox_actions")}
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent side="bottom" align="end" className="w-56">
         <DropdownMenuItem onPress={onMarkAllRead}>
-          <Text>Mark all read</Text>
+          <Text>{t("actions.mark_all_read")}</Text>
         </DropdownMenuItem>
         <DropdownMenuItem onPress={onArchiveAllRead}>
-          <Text>Archive all read</Text>
+          <Text>{t("actions.archive_all_read")}</Text>
         </DropdownMenuItem>
         <DropdownMenuItem onPress={onArchiveCompleted}>
-          <Text>Archive completed</Text>
+          <Text>{t("actions.archive_completed")}</Text>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onPress={onArchiveAll}>
-          <Text>Archive all</Text>
+          <Text>{t("actions.archive_all")}</Text>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -207,15 +206,16 @@ function InboxLoading() {
 }
 
 function InboxEmpty({ iconColor }: { iconColor: string }) {
+  const { t } = useT("inbox");
+
   return (
     <View className="flex-1 items-center justify-center px-8 gap-3">
       <Ionicons name="mail-open-outline" size={42} color={iconColor} />
       <Text className="text-base font-medium text-foreground text-center">
-        Inbox zero
+        {t("empty.title")}
       </Text>
       <Text className="text-sm text-muted-foreground text-center">
-        When someone @mentions you, assigns an issue, or an agent finishes a
-        task, it shows up here.
+        {t("empty.body")}
       </Text>
     </View>
   );

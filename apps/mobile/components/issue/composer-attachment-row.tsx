@@ -28,10 +28,12 @@
 import { useMemo } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useLightbox } from "@/lib/markdown/lightbox-provider";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
+import { useT } from "@/lib/i18n";
 
 /** Mention chip data — composer-local state. No store, no cross-route
  *  sharing. The composer owns the array and passes it in. */
@@ -119,9 +121,7 @@ export function ComposerAttachmentRow({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Mention chip — small capsule, no tap (only × removes).
-// ---------------------------------------------------------------------------
 
 function MentionChipView({
   mention,
@@ -130,6 +130,7 @@ function MentionChipView({
   mention: MentionChip;
   onRemove: (type: MentionChipType, id: string) => void;
 }) {
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
 
@@ -154,7 +155,7 @@ function MentionChipView({
         onPress={() => onRemove(mention.type, mention.id)}
         hitSlop={8}
         accessibilityRole="button"
-        accessibilityLabel={`Remove mention ${mention.name}`}
+        accessibilityLabel={t("a11y.remove_mention", { name: mention.name })}
         className="h-4 w-4 items-center justify-center"
       >
         <Ionicons name="close" size={12} color={theme.mutedForeground} />
@@ -163,9 +164,7 @@ function MentionChipView({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Attachment chip — image / file capsule with status overlay.
-// ---------------------------------------------------------------------------
 
 interface AttachmentChipProps {
   item: ComposerAttachmentItem;
@@ -177,6 +176,7 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const { open } = useLightbox();
+  const { t } = useT("issues");
 
   const isImage = useMemo(
     () => item.mimeType.startsWith("image/"),
@@ -193,8 +193,17 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
       // Prefer the local on-device file over the network URL — instant,
       // no signed-URL round-trip, works the same pre/post upload.
       open(item.localUri);
-    } else if (item.downloadUrl) {
-      void Linking.openURL(item.downloadUrl);
+    } else {
+      // Non-image file chip: open the canonical download URL in Safari.
+      // `downloadUrl` comes from `api.uploadFile(...).download_url`, which
+      // on non-CloudFront deployments is a server-relative path like
+      // `/api/attachments/{id}/download` (MUL-2976). RN's `Linking.openURL`
+      // requires an absolute http(s) URL — `Cannot open URL` otherwise — so
+      // resolve against `EXPO_PUBLIC_API_URL` first. Already-absolute
+      // CloudFront/presigned URLs pass through unchanged. `null` (no
+      // downloadUrl yet) falls through to a no-op.
+      const target = resolveAttachmentUrl(item.downloadUrl);
+      if (target) void Linking.openURL(target);
     }
   };
 
@@ -210,8 +219,8 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
       accessibilityRole={item.status === "failed" ? "button" : "image"}
       accessibilityLabel={
         item.status === "failed"
-          ? `Retry upload of ${item.filename}`
-          : `Open ${item.filename}`
+          ? t("a11y.retry_upload", { name: item.filename })
+          : t("a11y.open_file", { name: item.filename })
       }
       className="flex-row items-center gap-1 h-7 px-2 rounded-full bg-secondary active:opacity-80"
     >
@@ -238,7 +247,7 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
         onPress={() => onRemove(item.localId)}
         hitSlop={8}
         accessibilityRole="button"
-        accessibilityLabel={`Remove ${item.filename}`}
+        accessibilityLabel={t("a11y.remove_file", { name: item.filename })}
         className="h-4 w-4 items-center justify-center"
       >
         <Ionicons name="close" size={12} color={theme.mutedForeground} />

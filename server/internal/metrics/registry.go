@@ -12,16 +12,22 @@ import (
 )
 
 type RegistryOptions struct {
-	Pool     *pgxpool.Pool
-	Realtime *realtime.Metrics
-	DaemonWS *daemonws.Metrics
-	Version  string
-	Commit   string
+	Pool        *pgxpool.Pool
+	ReplicaPool *pgxpool.Pool
+	Realtime    *realtime.Metrics
+	DaemonWS    *daemonws.Metrics
+	Version     string
+	Commit      string
 }
 
 type Registry struct {
-	Gatherer prometheus.Gatherer
-	HTTP     *HTTPMetrics
+	Gatherer     prometheus.Gatherer
+	HTTP         *HTTPMetrics
+	Business     *BusinessMetrics
+	ChannelMedia *ChannelMediaReconcilerMetrics
+	ChannelLease *ChannelLeaseMetrics
+	Wecom        *WecomMetrics
+	DBRouting    *DBRoutingMetrics
 }
 
 func NewRegistry(opts RegistryOptions) *Registry {
@@ -39,8 +45,22 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	httpMetrics := NewHTTPMetrics()
 	reg.MustRegister(httpMetrics.Collectors()...)
 
+	businessMetrics := NewBusinessMetrics()
+	reg.MustRegister(businessMetrics.Collectors()...)
+
+	channelMedia := NewChannelMediaReconcilerMetrics()
+	reg.MustRegister(channelMedia.Collectors()...)
+
+	channelLease := NewChannelLeaseMetrics()
+	reg.MustRegister(channelLease.Collectors()...)
+
+	wecomMetrics := NewWecomMetrics()
+	reg.MustRegister(wecomMetrics.Collectors()...)
+	dbRoutingMetrics := NewDBRoutingMetrics()
+	reg.MustRegister(dbRoutingMetrics.Collectors()...)
+
 	if opts.Pool != nil {
-		reg.MustRegister(NewDBCollector(opts.Pool))
+		reg.MustRegister(NewDBCollector(opts.Pool, opts.ReplicaPool))
 	}
 	if opts.Realtime != nil {
 		reg.MustRegister(NewRealtimeCollector(opts.Realtime))
@@ -50,8 +70,13 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	}
 
 	return &Registry{
-		Gatherer: reg,
-		HTTP:     httpMetrics,
+		Gatherer:     reg,
+		HTTP:         httpMetrics,
+		Business:     businessMetrics,
+		ChannelMedia: channelMedia,
+		ChannelLease: channelLease,
+		Wecom:        wecomMetrics,
+		DBRouting:    dbRoutingMetrics,
 	}
 }
 

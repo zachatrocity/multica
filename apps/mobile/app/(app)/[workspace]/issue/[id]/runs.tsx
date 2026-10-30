@@ -1,7 +1,7 @@
 /**
  * Agent Runs sheet — presented as a formSheet by the parent Stack. Two
  * sections: Active (queued/dispatched/running, created_at desc) and Past
- * (failed → cancelled → completed, completed_at desc within each). Empty
+ * (completed_at desc, status rank as tiebreaker). Empty
  * sections hide entirely.
  *
  * Both entry points (the in-card AgentActivityRow and the Stack-header
@@ -9,7 +9,8 @@
  * the legacy `useRunsSheetStore` is gone since the route system is the
  * single source of truth for what's open.
  *
- * Past-row tap is a no-op in v1 — transcript drilldown is deferred.
+ * Past rows push a task-id-addressed execution-record screen. Keeping the
+ * identifier in the route makes deep links and cache misses deterministic.
  */
 import { useMemo } from "react";
 import { ScrollView, View } from "react-native";
@@ -23,12 +24,14 @@ import {
   issueTasksOptions,
 } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useT } from "@/lib/i18n";
 
 const PAST_STATUS_ORDER: Record<AgentTask["status"], number> = {
   failed: 0,
   cancelled: 1,
   completed: 2,
   queued: 99,
+  deferred: 99,
   dispatched: 99,
   waiting_local_directory: 99,
   running: 99,
@@ -37,6 +40,7 @@ const PAST_STATUS_ORDER: Record<AgentTask["status"], number> = {
 export default function IssueRunsRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { t } = useT("issues");
   const { data: activeTasks = [] } = useQuery(
     issueActiveTasksOptions(wsId, id),
   );
@@ -58,9 +62,9 @@ export default function IssueRunsRoute() {
         t.status === "cancelled",
     );
     return filtered.sort((a, b) => {
-      const ord = PAST_STATUS_ORDER[a.status] - PAST_STATUS_ORDER[b.status];
-      if (ord !== 0) return ord;
-      return (b.completed_at ?? "").localeCompare(a.completed_at ?? "");
+      const timeDiff = (b.completed_at ?? "").localeCompare(a.completed_at ?? "");
+      if (timeDiff !== 0) return timeDiff;
+      return PAST_STATUS_ORDER[a.status] - PAST_STATUS_ORDER[b.status];
     });
   }, [allTasks]);
 
@@ -68,20 +72,20 @@ export default function IssueRunsRoute() {
     <View className="flex-1">
       <View className="px-4 pt-4 pb-3">
         <Text className="text-base font-semibold text-foreground">
-          Agent Runs
+          {t("runs.title")}
         </Text>
       </View>
       <ScrollView showsVerticalScrollIndicator={false}>
         <View className="px-4 gap-3 pb-4">
           {active.length > 0 ? (
-            <Section title="Active">
+            <Section title={t("runs.active")}>
               {active.map((task) => (
                 <RunRow key={task.id} task={task} issueId={id} />
               ))}
             </Section>
           ) : null}
           {past.length > 0 ? (
-            <Section title="Past">
+            <Section title={t("runs.past")}>
               {past.map((task) => (
                 <RunRow key={task.id} task={task} issueId={id} />
               ))}

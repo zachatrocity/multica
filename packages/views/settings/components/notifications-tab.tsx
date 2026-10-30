@@ -5,10 +5,16 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { notificationPreferenceOptions } from "@multica/core/notification-preferences/queries";
 import { useUpdateNotificationPreferences } from "@multica/core/notification-preferences/mutations";
 import type { NotificationGroupKey, NotificationPreferences } from "@multica/core/types";
-import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { toast } from "sonner";
 import { useT } from "../../i18n";
+import { BrowserNotificationSetting } from "./browser-notification-setting";
+import {
+  SettingsCard,
+  SettingsRow,
+  SettingsSection,
+  SettingsTab,
+} from "./settings-layout";
 
 // Inbox event groups rendered in the per-event toggle list. `system_notifications`
 // is a sibling preference key but lives in its own section below.
@@ -16,6 +22,7 @@ const INBOX_GROUP_KEYS = [
   "assignments",
   "status_changes",
   "comments",
+  "mentions",
   "updates",
   "agent_activity",
 ] as const;
@@ -51,66 +58,53 @@ export function NotificationsTab() {
   const systemEnabled = preferences.system_notifications !== "muted";
 
   return (
-    <div className="space-y-8">
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold">{t(($) => $.notifications.title)}</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            {t(($) => $.notifications.description)}
-          </p>
-        </div>
-
-        <Card>
-          <CardContent className="divide-y">
+    <SettingsTab title={t(($) => $.page.tabs.notifications)} scope="workspace-only">
+      <SettingsSection
+        title={t(($) => $.notifications.title)}
+        description={t(($) => $.notifications.description)}
+        anchor="inbox"
+      >
+        <SettingsCard>
             {INBOX_GROUP_KEYS.map((key: InboxGroupKey) => {
               const enabled = preferences[key] !== "muted";
               return (
-                <div
+                <SettingsRow
                   key={key}
-                  className="flex items-center justify-between py-3 first:pt-0 last:pb-0"
+                  anchor={key}
+                  label={t(($) => $.notifications.groups[key].label)}
+                  description={t(($) => $.notifications.groups[key].description)}
                 >
-                  <div className="space-y-0.5 pr-4">
-                    <p className="text-sm font-medium">{t(($) => $.notifications.groups[key].label)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {t(($) => $.notifications.groups[key].description)}
-                    </p>
-                  </div>
                   <Switch
                     checked={enabled}
+                    aria-label={t(($) => $.notifications.groups[key].label)}
                     onCheckedChange={(checked) => handleToggle(key, checked)}
                   />
-                </div>
+                </SettingsRow>
               );
             })}
-          </CardContent>
-        </Card>
-      </section>
+        </SettingsCard>
+      </SettingsSection>
 
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold">{t(($) => $.notifications.system.title)}</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            {t(($) => $.notifications.system.description)}
-          </p>
-        </div>
-
-        <Card>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5 pr-4">
-                <p className="text-sm font-medium">{t(($) => $.notifications.system.label)}</p>
-                <p className="text-xs text-muted-foreground">
-                  {t(($) => $.notifications.system.hint)}
-                </p>
-              </div>
+      <SettingsSection
+        title={t(($) => $.notifications.system.title)}
+      >
+        <SettingsCard>
+          <SettingsRow
+            anchor="system"
+            label={t(($) => $.notifications.system.label)}
+          >
               <Switch
                 checked={systemEnabled}
+                aria-label={t(($) => $.notifications.system.label)}
                 onCheckedChange={(checked) => handleToggle("system_notifications", checked)}
               />
-            </div>
-          </CardContent>
-        </Card>
-      </section>
-    </div>
+          </SettingsRow>
+        </SettingsCard>
+
+        {/* Web-only: the browser permission banners require. Renders nothing on
+            desktop (OS-native delivery) or where the Notification API is absent. */}
+        <BrowserNotificationSetting />
+      </SettingsSection>
+    </SettingsTab>
   );
 }

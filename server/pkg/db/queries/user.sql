@@ -6,6 +6,13 @@ WHERE id = $1;
 SELECT * FROM "user"
 WHERE email = $1;
 
+-- name: GetUsersByIDs :many
+-- Batch lookup from the GLOBAL user table (not gated on membership, so departed
+-- members still render). Used to enrich attribution initiator / originator refs on
+-- task responses without an N+1 (MUL-4302 §9). Returns only the display fields.
+SELECT id, name, email, avatar_url FROM "user"
+WHERE id = ANY(@ids::uuid[]);
+
 -- name: CreateUser :one
 INSERT INTO "user" (name, email, avatar_url)
 VALUES ($1, $2, $3)
@@ -63,18 +70,6 @@ RETURNING *;
 UPDATE "user" SET
     cloud_waitlist_email = $2,
     cloud_waitlist_reason = $3,
-    updated_at = now()
-WHERE id = $1
-RETURNING *;
-
--- name: SetStarterContentState :one
--- Atomically transition starter_content_state. The handler is
--- responsible for checking the current value first (to decide between
--- "transition NULL -> imported and run the seeding" vs "already
--- decided, short-circuit"). Using COALESCE here would swallow the
--- transition, so this is a straight assignment.
-UPDATE "user" SET
-    starter_content_state = $2,
     updated_at = now()
 WHERE id = $1
 RETURNING *;

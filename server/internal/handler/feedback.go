@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -21,19 +22,40 @@ import (
 var feedbackImageRegex = regexp.MustCompile(`!\[[^\]]*\]\([^)]+\)`)
 
 const (
-	feedbackMaxMessageLen   = 10000
-	feedbackHourlyRateLimit = 10
+	feedbackMaxMessageLen                = 10000
+	feedbackHourlyRateLimit              = 10
+	desktopRouteErrorFeedbackContextKind = "desktop_route_error"
 	// feedbackBodyLimit caps the request body at 64 KiB. Message is capped at
-	// 10k chars separately; the extra budget covers JSON overhead plus the
-	// optional url/workspace_id fields without letting an authenticated client
-	// POST megabytes of junk into the metadata JSONB column.
+	// 10k chars separately; the extra budget covers JSON overhead, optional
+	// request fields, and diagnostic context without letting an authenticated
+	// client POST megabytes of junk into the metadata JSONB column.
 	feedbackBodyLimit = 64 * 1024
 )
 
+type FeedbackErrorContext struct {
+	Name    string `json:"name"`
+	Message string `json:"message"`
+	Stack   string `json:"stack,omitempty"`
+}
+
+type FeedbackContext struct {
+	Kind    string               `json:"kind"`
+	Trigger string               `json:"trigger"`
+	Error   FeedbackErrorContext `json:"error"`
+}
+
 type CreateFeedbackRequest struct {
-	Message     string  `json:"message"`
-	URL         string  `json:"url"`
-	WorkspaceID *string `json:"workspace_id,omitempty"`
+	Message string `json:"message"`
+	URL     string `json:"url"`
+	// Kind is the coarse category the feedback picker stamps. The metric
+	// label `multica_feedback_submitted_total{kind=...}` reads it via the
+	// fixed allow-list in metrics.NormalizeFeedbackKind ("bug", "feature",
+	// "general", "praise"); anything outside collapses to "other". Empty /
+	// missing falls back to "general" so legacy clients that don't send the
+	// field don't blackhole the metric.
+	Kind        string           `json:"kind"`
+	WorkspaceID *string          `json:"workspace_id,omitempty"`
+	Context     *FeedbackContext `json:"context,omitempty"`
 }
 
 type FeedbackResponse struct {
@@ -63,6 +85,10 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "message too long")
 		return
 	}
+	if !validFeedbackContext(req.Context) {
+		writeError(w, http.StatusBadRequest, "invalid feedback context")
+		return
+	}
 
 	// Per-user rate limit: hourly cap on feedback submissions. DB-backed so it
 	// survives process restarts and works across multiple instances without a
@@ -86,11 +112,13 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 		"os":         clientOS,
 		"user_agent": r.UserAgent(),
 	}
+	if req.Context != nil {
+		metadata["context"] = req.Context
+	}
 	metaBytes, err := json.Marshal(metadata)
 	if err != nil {
-		// Impossible in practice — map[string]any with primitive values never
-		// fails to marshal — but fall through with an empty object rather than
-		// 500ing on a non-critical field.
+		// The map contains only known JSON-compatible values, but fall through
+		// with an empty object rather than 500ing on non-critical metadata.
 		metaBytes = []byte("{}")
 	}
 
@@ -117,9 +145,15 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("feedback submitted", append(logger.RequestAttrs(r), "feedback_id", uuidToString(fb.ID))...)
 
-	h.Analytics.Capture(analytics.FeedbackSubmitted(
+	kind := strings.TrimSpace(req.Kind)
+	if kind == "" {
+		kind = "general"
+	}
+
+	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.FeedbackSubmitted(
 		userID,
 		uuidToString(fb.WorkspaceID),
+		kind,
 		len(message),
 		feedbackImageRegex.MatchString(message),
 		platform,
@@ -130,4 +164,14 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 		ID:        uuidToString(fb.ID),
 		CreatedAt: timestampToString(fb.CreatedAt),
 	})
+}
+
+func validFeedbackContext(context *FeedbackContext) bool {
+	if context == nil {
+		return true
+	}
+	return context.Kind == desktopRouteErrorFeedbackContextKind &&
+		strings.TrimSpace(context.Trigger) != "" &&
+		strings.TrimSpace(context.Error.Name) != "" &&
+		strings.TrimSpace(context.Error.Message) != ""
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -61,7 +60,7 @@ func runIssueLabelList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	issueRef, err := resolveIssueRef(ctx, client, args[0])
@@ -89,14 +88,14 @@ func runIssueLabelAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	issueRef, err := resolveIssueRef(ctx, client, args[0])
 	if err != nil {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
-	labelRef, err := resolveLabelID(ctx, client, args[1])
+	labelRef, err := resolveLabelID(ctx, client, args[1], "issue")
 	if err != nil {
 		return fmt.Errorf("resolve label: %w", err)
 	}
@@ -122,14 +121,14 @@ func runIssueLabelRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	issueRef, err := resolveIssueRef(ctx, client, args[0])
 	if err != nil {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
-	labelRef, err := resolveLabelID(ctx, client, args[1])
+	labelRef, err := resolveLabelID(ctx, client, args[1], "issue")
 	if err != nil {
 		return fmt.Errorf("resolve label: %w", err)
 	}

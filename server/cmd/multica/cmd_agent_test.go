@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 // freshAgentEnvSetCmd returns a standalone cobra.Command with the three
@@ -32,6 +33,296 @@ func freshAgentEnvSetCmd() *cobra.Command {
 	return c
 }
 
+func newAgentTasksTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "tasks"}
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().Int("limit", 200, "")
+	cmd.Flags().String("before", "", "")
+	cmd.Flags().String("profile", "", "")
+	return cmd
+}
+
+func TestRunAgentTasksRequestsUsageForJSON(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/agents/agent-123/tasks" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("include_usage"); got != "true" {
+			t.Errorf("include_usage = %q, want true for JSON output", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{{
+			"id":    "task-1",
+			"usage": []map[string]any{{"provider": "openai", "input_tokens": 12}},
+		}})
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newAgentTasksTestCmd()
+	out, err := captureStdout(t, func() error { return runAgentTasks(cmd, []string{"agent-123"}) })
+	if err != nil {
+		t.Fatalf("runAgentTasks: %v", err)
+	}
+	if !strings.Contains(out, `"input_tokens": 12`) {
+		t.Fatalf("JSON output missing usage: %s", out)
+	}
+}
+
+func TestRunAgentTasksPagination(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	cursor := "2026-09-24T01:02:03.123456Z|00000000-0000-0000-0000-000000000001"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") != "7" || r.URL.Query().Get("before") != cursor {
+			t.Errorf("pagination query = %s", r.URL.RawQuery)
+		}
+		w.Header().Set("X-Agent-Tasks-Next-Cursor", cursor)
+		_, _ = w.Write([]byte(`[{"id":"task-1"}]`))
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	cmd := newAgentTasksTestCmd()
+	_ = cmd.Flags().Set("limit", "7")
+	_ = cmd.Flags().Set("before", cursor)
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	output, err := captureStdout(t, func() error { return runAgentTasks(cmd, []string{"agent-123"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "--before") || !strings.Contains(stderr.String(), cursor) {
+		t.Fatalf("missing continuation: %s", stderr.String())
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(output), &rows); err != nil {
+		t.Fatalf("stdout must remain JSON: %s", output)
+	}
+}
+
+func TestRunAgentTasksKeepsTableRequestLightweight(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/agents/agent-123/tasks" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("include_usage"); got != "" {
+			t.Errorf("include_usage = %q, want omitted for table output", got)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "task-1", "status": "completed"}})
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newAgentTasksTestCmd()
+	if err := cmd.Flags().Set("output", "table"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureStdout(t, func() error { return runAgentTasks(cmd, []string{"agent-123"}) })
+	if err != nil {
+		t.Fatalf("runAgentTasks: %v", err)
+	}
+	if !strings.Contains(out, "task-1") {
+		t.Fatalf("output = %s", out)
+	}
+}
+
+func chdirWithDaemonTaskMarker(t *testing.T) {
+	t.Helper()
+
+	workDir := t.TempDir()
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
+		t.Fatalf("create marker dir: %v", err)
+	}
+	// Task-scoped: a real workdir marker always carries the identity of the
+	// task that wrote it, and that identity is what separates a leftover from
+	// the permanent workspaces root marker, which has managed_by and nothing
+	// else (MUL-6132). Writing the bare form here would model the root marker
+	// rather than the workdir marker these tests are about.
+	data := []byte(`{"managed_by":"` + execenv.TaskContextMarkerManagedBy + `","agent_id":"agent-1","issue_id":"issue-1"}`)
+	if err := os.WriteFile(markerPath, data, 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	nested := filepath.Join(workDir, "repo", "pkg")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create nested cwd: %v", err)
+	}
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(prev); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+}
+
+func TestHumanLocalCommandDistinguishesPortHintFromTaskIdentity(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv(cli.TaskConfigRootEnv, "")
+	t.Setenv("MULTICA_DAEMON_PORT", "20032")
+
+	if err := requireHumanLocalCommand("login"); err != nil {
+		t.Fatalf("port-only host context rejected login: %v", err)
+	}
+
+	t.Setenv(cli.TaskConfigRootEnv, filepath.Join(t.TempDir(), "task-multica"))
+	if err := requireHumanLocalCommand("login"); err == nil || !strings.Contains(err.Error(), "daemon-managed task") {
+		t.Fatalf("task config root did not reject login: %v", err)
+	}
+}
+
+func TestHumanLocalCommandRejectsWorkdirTaskMarker(t *testing.T) {
+	chdirWithDaemonTaskMarker(t)
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv(cli.TaskConfigRootEnv, "")
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+
+	if err := requireHumanLocalCommand("daemon stop"); err == nil || !strings.Contains(err.Error(), "daemon-managed task") {
+		t.Fatalf("workdir task marker did not reject daemon stop: %v", err)
+	}
+}
+
+func TestHumanLocalCommandRejectsExplicitTaskIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		envName string
+		command string
+	}{
+		{name: "agent ID blocks setup", envName: "MULTICA_AGENT_ID", command: "setup"},
+		{name: "task ID blocks daemon stop", envName: "MULTICA_TASK_ID", command: "daemon stop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			t.Setenv("MULTICA_AGENT_ID", "")
+			t.Setenv("MULTICA_TASK_ID", "")
+			t.Setenv(cli.TaskConfigRootEnv, "")
+			t.Setenv("MULTICA_DAEMON_PORT", "")
+			t.Setenv(tc.envName, "task-identity")
+
+			if err := requireHumanLocalCommand(tc.command); err == nil || !strings.Contains(err.Error(), "daemon-managed task") {
+				t.Fatalf("%s with %s was not rejected: %v", tc.command, tc.envName, err)
+			}
+		})
+	}
+}
+
+func TestMissingServerConfigMessageExplainsPortOnlyContext(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv(cli.TaskConfigRootEnv, "")
+	t.Setenv("MULTICA_DAEMON_PORT", "20032")
+
+	message := missingServerConfigMessage()
+	if !strings.Contains(message, "MULTICA_DAEMON_PORT") || !strings.Contains(message, "remove") {
+		t.Fatalf("missing server message = %q, want stale port recovery guidance", message)
+	}
+}
+
+// TestNewAPIClient_WorkdirParentEscapeFailsClosed reproduces the confirmed
+// impersonation escape: a sandbox fault strips every MULTICA_* env var from
+// an agent subprocess, which then runs `multica` from the *parent* directory
+// of its workdir. The per-workdir marker sits below cwd, so the upward walk
+// used to find no daemon signal and silently fell back to the user's config
+// PAT, posting agent writes as the workspace owner (author_type=member).
+//
+// The daemon now writes a persistent marker at the workspaces root
+// (execenv.EnsureWorkspacesRootMarker), so every cwd inside the
+// daemon-owned tree — task dir, workspace dir, sibling task dirs, the root
+// itself — carries the fail-closed signal. This test builds that tree shape
+// and asserts the CLI refuses the config-PAT fallback from the escaped cwd.
+func TestNewAPIClient_WorkdirParentEscapeFailsClosed(t *testing.T) {
+	// Seed a user config with a mul_ PAT that must never be picked up.
+	redirectTestHome(t, t.TempDir())
+	if err := cli.SaveCLIConfig(cli.CLIConfig{Token: "mul_owner_pat"}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	// Daemon-owned tree: {root}/.multica marker + {root}/{ws}/{task}/workdir
+	// with its own per-workdir marker, exactly as the daemon lays it out.
+	root := t.TempDir()
+	if err := execenv.EnsureWorkspacesRootMarker(root); err != nil {
+		t.Fatalf("write root marker: %v", err)
+	}
+	taskDir := filepath.Join(root, "ws-1", "task-1")
+	workDir := filepath.Join(taskDir, "workdir")
+	workdirMarker := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	if err := os.MkdirAll(filepath.Dir(workdirMarker), 0o755); err != nil {
+		t.Fatalf("create workdir marker dir: %v", err)
+	}
+	data := []byte(`{"managed_by":"` + execenv.TaskContextMarkerManagedBy + `"}`)
+	if err := os.WriteFile(workdirMarker, data, 0o644); err != nil {
+		t.Fatalf("write workdir marker: %v", err)
+	}
+
+	// The escape: cwd is the workdir's parent, all daemon env vars gone.
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(taskDir); err != nil {
+		t.Fatalf("chdir task dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(prev); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+	t.Setenv("MULTICA_TOKEN", "")
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+
+	if got := resolveToken(testCmd()); got != "" {
+		t.Fatalf("resolveToken() = %q, want empty (config PAT must not leak into an escaped daemon subprocess)", got)
+	}
+	if _, err := newAPIClient(testCmd()); err == nil {
+		t.Fatal("newAPIClient(): expected fail-closed error from workdir-parent escape, got nil")
+	} else if !strings.Contains(err.Error(), "mat_") {
+		t.Fatalf("error should demand a task-scoped mat_ token; got %q", err.Error())
+	}
+}
+
+// TestNewAPIClient_LeftoverMarkerActionableError verifies that a stale
+// daemon-task marker with no daemon env (the local_directory crash-leftover
+// case) fails closed with an actionable message that names the marker file,
+// rather than an opaque "requires mat_ token" error.
+func TestNewAPIClient_LeftoverMarkerActionableError(t *testing.T) {
+	chdirWithDaemonTaskMarker(t)
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+	t.Setenv("MULTICA_TOKEN", "")
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+
+	if _, err := newAPIClient(testCmd()); err == nil {
+		t.Fatal("newAPIClient(): expected error for leftover daemon-task marker, got nil")
+	} else if !strings.Contains(err.Error(), execenv.TaskContextMarkerRelPath) {
+		t.Fatalf("error should name the marker path; got %q", err.Error())
+	} else if !strings.Contains(err.Error(), "leftover") {
+		t.Fatalf("error should hint it may be a leftover; got %q", err.Error())
+	}
+}
+
 // TestResolveWorkspaceID_AgentContextSkipsConfig is a regression test for
 // the cross-workspace contamination bug (#1235). Inside a daemon-spawned
 // agent task (MULTICA_AGENT_ID / MULTICA_TASK_ID set), the CLI must NOT
@@ -42,7 +333,7 @@ func freshAgentEnvSetCmd() *cobra.Command {
 // Outside agent context, the three-level fallback (flag → env → config) is
 // unchanged.
 func TestResolveWorkspaceID_AgentContextSkipsConfig(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 
 	// Seed the global CLI config with a workspace_id that must NOT be
 	// picked up while running inside an agent task.
@@ -53,6 +344,7 @@ func TestResolveWorkspaceID_AgentContextSkipsConfig(t *testing.T) {
 	t.Run("outside agent context falls back to config", func(t *testing.T) {
 		t.Setenv("MULTICA_AGENT_ID", "")
 		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
 		t.Setenv("MULTICA_WORKSPACE_ID", "")
 
 		got := resolveWorkspaceID(testCmd())
@@ -64,6 +356,7 @@ func TestResolveWorkspaceID_AgentContextSkipsConfig(t *testing.T) {
 	t.Run("agent context with explicit env uses env", func(t *testing.T) {
 		t.Setenv("MULTICA_AGENT_ID", "agent-123")
 		t.Setenv("MULTICA_TASK_ID", "task-456")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
 		t.Setenv("MULTICA_WORKSPACE_ID", "env-ws")
 
 		got := resolveWorkspaceID(testCmd())
@@ -75,6 +368,7 @@ func TestResolveWorkspaceID_AgentContextSkipsConfig(t *testing.T) {
 	t.Run("agent context without env returns empty, never config", func(t *testing.T) {
 		t.Setenv("MULTICA_AGENT_ID", "agent-123")
 		t.Setenv("MULTICA_TASK_ID", "task-456")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
 		t.Setenv("MULTICA_WORKSPACE_ID", "")
 
 		got := resolveWorkspaceID(testCmd())
@@ -86,6 +380,30 @@ func TestResolveWorkspaceID_AgentContextSkipsConfig(t *testing.T) {
 	t.Run("task marker alone also counts as agent context", func(t *testing.T) {
 		t.Setenv("MULTICA_AGENT_ID", "")
 		t.Setenv("MULTICA_TASK_ID", "task-456")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_WORKSPACE_ID", "")
+
+		if got := resolveWorkspaceID(testCmd()); got != "" {
+			t.Fatalf("resolveWorkspaceID() = %q, want empty", got)
+		}
+	})
+
+	t.Run("daemon port marker also skips config", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "27182")
+		t.Setenv("MULTICA_WORKSPACE_ID", "")
+
+		if got := resolveWorkspaceID(testCmd()); got != "" {
+			t.Fatalf("resolveWorkspaceID() = %q, want empty", got)
+		}
+	})
+
+	t.Run("workdir marker also skips config when env is stripped", func(t *testing.T) {
+		chdirWithDaemonTaskMarker(t)
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
 		t.Setenv("MULTICA_WORKSPACE_ID", "")
 
 		if got := resolveWorkspaceID(testCmd()); got != "" {
@@ -96,6 +414,7 @@ func TestResolveWorkspaceID_AgentContextSkipsConfig(t *testing.T) {
 	t.Run("requireWorkspaceID surfaces agent-context error", func(t *testing.T) {
 		t.Setenv("MULTICA_AGENT_ID", "agent-123")
 		t.Setenv("MULTICA_TASK_ID", "task-456")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
 		t.Setenv("MULTICA_WORKSPACE_ID", "")
 
 		_, err := requireWorkspaceID(testCmd())
@@ -106,6 +425,267 @@ func TestResolveWorkspaceID_AgentContextSkipsConfig(t *testing.T) {
 			t.Fatalf("requireWorkspaceID() error = %q, want it to mention agent execution context", err.Error())
 		}
 	})
+}
+
+func TestResolveToken_AgentContextSkipsConfig(t *testing.T) {
+	redirectTestHome(t, t.TempDir())
+
+	if err := cli.SaveCLIConfig(cli.CLIConfig{Token: "mul_profile_token"}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	t.Run("outside agent context falls back to config", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_TOKEN", "")
+
+		if got := resolveToken(testCmd()); got != "mul_profile_token" {
+			t.Fatalf("resolveToken() = %q, want profile token", got)
+		}
+	})
+
+	t.Run("explicit server URL alone still allows normal config token fallback", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+		t.Setenv("MULTICA_TOKEN", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+
+		if got := resolveToken(testCmd()); got != "mul_profile_token" {
+			t.Fatalf("resolveToken() = %q, want profile token", got)
+		}
+	})
+
+	t.Run("agent context without env never reads config", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "agent-123")
+		t.Setenv("MULTICA_TASK_ID", "task-456")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_TOKEN", "")
+
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty in agent context without MULTICA_TOKEN", got)
+		}
+	})
+
+	t.Run("daemon port marker without env never reads config", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "27182")
+		t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+		t.Setenv("MULTICA_TOKEN", "")
+
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty in daemon-managed context without MULTICA_TOKEN", got)
+		}
+	})
+
+	t.Run("workdir marker without env never reads config", func(t *testing.T) {
+		chdirWithDaemonTaskMarker(t)
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+		t.Setenv("MULTICA_TOKEN", "")
+
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty in daemon-managed context without MULTICA_TOKEN", got)
+		}
+	})
+
+	// A non-regular file at the marker path (here a directory) makes
+	// os.ReadFile fail with a non-IsNotExist error. That must NOT be read as a
+	// daemon-task signal: a normal user whose ancestor tree happens to contain
+	// such a path (or any unreadable one) must still reach their config token,
+	// rather than be locked out by a fail-closed guard on an unrelated error.
+	t.Run("unreadable marker path does not fail closed", func(t *testing.T) {
+		workDir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(workDir, execenv.TaskContextMarkerRelPath), 0o755); err != nil {
+			t.Fatalf("create marker-as-dir: %v", err)
+		}
+		nested := filepath.Join(workDir, "repo")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatalf("create nested cwd: %v", err)
+		}
+		prev, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("get cwd: %v", err)
+		}
+		if err := os.Chdir(nested); err != nil {
+			t.Fatalf("chdir nested: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chdir(prev); err != nil {
+				t.Fatalf("restore cwd: %v", err)
+			}
+		})
+
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_SERVER_URL", "")
+		t.Setenv("MULTICA_TOKEN", "")
+
+		if got := resolveToken(testCmd()); got != "mul_profile_token" {
+			t.Fatalf("resolveToken() = %q, want profile token (unreadable marker path must not fail closed)", got)
+		}
+	})
+
+	t.Run("agent context uses explicit task token env", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "agent-123")
+		t.Setenv("MULTICA_TASK_ID", "task-456")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_TOKEN", "mat_task_token")
+
+		if got := resolveToken(testCmd()); got != "mat_task_token" {
+			t.Fatalf("resolveToken() = %q, want MULTICA_TOKEN", got)
+		}
+	})
+
+	t.Run("daemon port set without agent context avoids config fallback", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_TOKEN", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "19514")
+
+		if got := resolveToken(testCmd()); got != "" {
+			t.Fatalf("resolveToken() = %q, want empty (daemon port set, fail closed)", got)
+		}
+	})
+
+	t.Run("daemon port set with explicit task token uses task token", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_TOKEN", "mat_task_token")
+		t.Setenv("MULTICA_DAEMON_PORT", "19514")
+
+		if got := resolveToken(testCmd()); got != "mat_task_token" {
+			t.Fatalf("resolveToken() = %q, want MULTICA_TOKEN (task token wins over daemon signal)", got)
+		}
+	})
+
+	// MULTICA_SERVER_URL is a user-facing env var that may be set in a
+	// normal shell. It is NOT a daemon identity signal — only
+	// MULTICA_DAEMON_PORT is. The config fallback must still work when
+	// SERVER_URL is set but no daemon signal is present.
+	t.Run("MULTICA_SERVER_URL alone does not block config fallback", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_TOKEN", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_SERVER_URL", "https://api.multica.ai")
+
+		if got := resolveToken(testCmd()); got != "mul_profile_token" {
+			t.Fatalf("resolveToken() = %q, want profile token (SERVER_URL is not a daemon identity signal)", got)
+		}
+	})
+
+	// Normal CLI usage: no daemon signals whatsoever. The user-global
+	// config token must be reachable. This is the most basic path and
+	// must not be broken by any daemon-signal guard expansion.
+	t.Run("no daemon signals, normal CLI reads config token", func(t *testing.T) {
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+		t.Setenv("MULTICA_TOKEN", "")
+		t.Setenv("MULTICA_DAEMON_PORT", "")
+		t.Setenv("MULTICA_SERVER_URL", "")
+
+		if got := resolveToken(testCmd()); got != "mul_profile_token" {
+			t.Fatalf("resolveToken() = %q, want profile token (normal CLI flow)", got)
+		}
+	})
+}
+
+func TestNewAPIClient_AgentContextRequiresTaskToken(t *testing.T) {
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
+	t.Setenv("MULTICA_AGENT_ID", "agent-123")
+	t.Setenv("MULTICA_TASK_ID", "task-456")
+
+	t.Run("missing token fails closed", func(t *testing.T) {
+		t.Setenv("MULTICA_TOKEN", "")
+
+		_, err := newAPIClient(testCmd())
+		if err == nil {
+			t.Fatal("newAPIClient(): expected error without task token")
+		}
+		if !strings.Contains(err.Error(), "mat_ token") {
+			t.Fatalf("newAPIClient() error = %q, want mat_ token guidance", err.Error())
+		}
+	})
+
+	t.Run("member token fails closed", func(t *testing.T) {
+		t.Setenv("MULTICA_TOKEN", "mul_member_token")
+
+		_, err := newAPIClient(testCmd())
+		if err == nil {
+			t.Fatal("newAPIClient(): expected error with member token")
+		}
+		if !strings.Contains(err.Error(), "mat_ token") {
+			t.Fatalf("newAPIClient() error = %q, want mat_ token guidance", err.Error())
+		}
+	})
+
+	t.Run("task token succeeds", func(t *testing.T) {
+		t.Setenv("MULTICA_TOKEN", "mat_task_token")
+
+		client, err := newAPIClient(testCmd())
+		if err != nil {
+			t.Fatalf("newAPIClient(): %v", err)
+		}
+		if client.Token != "mat_task_token" {
+			t.Fatalf("client token = %q, want task token", client.Token)
+		}
+	})
+}
+
+func TestNewAPIClient_DaemonPortRequiresTaskToken(t *testing.T) {
+	t.Chdir(t.TempDir())
+	redirectTestHome(t, t.TempDir())
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-123")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_DAEMON_PORT", "27182")
+	t.Setenv("MULTICA_TOKEN", "")
+
+	if err := cli.SaveCLIConfig(cli.CLIConfig{Token: "mul_profile_token", WorkspaceID: "config-file-ws"}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	_, err := newAPIClient(testCmd())
+	if err == nil {
+		t.Fatal("newAPIClient(): expected error without task token")
+	}
+	if !strings.Contains(err.Error(), "mat_ token") {
+		t.Fatalf("newAPIClient() error = %q, want mat_ token guidance", err.Error())
+	}
+	if !strings.Contains(err.Error(), "MULTICA_DAEMON_PORT") || !strings.Contains(err.Error(), "remove") {
+		t.Fatalf("newAPIClient() error = %q, want stale port recovery guidance", err.Error())
+	}
+}
+
+func TestNewAPIClient_WorkdirMarkerRequiresTaskToken(t *testing.T) {
+	redirectTestHome(t, t.TempDir())
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:8080")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+	t.Setenv("MULTICA_TOKEN", "")
+	chdirWithDaemonTaskMarker(t)
+
+	if err := cli.SaveCLIConfig(cli.CLIConfig{Token: "mul_profile_token", WorkspaceID: "config-file-ws"}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	_, err := newAPIClient(testCmd())
+	if err == nil {
+		t.Fatal("newAPIClient(): expected error without task token")
+	}
+	if !strings.Contains(err.Error(), "mat_ token") {
+		t.Fatalf("newAPIClient() error = %q, want mat_ token guidance", err.Error())
+	}
 }
 
 // TestParseCustomEnv covers the --custom-env flag parser used by
@@ -195,7 +775,7 @@ func TestParseCustomEnv(t *testing.T) {
 // --custom-env* flags are gone from `agent update`; the hint must
 // surface their replacement so users discover the new audited path.
 func TestAgentUpdateNoFieldsErrorPointsAtEnvCommand(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	redirectTestHome(t, t.TempDir())
 	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:0")
 	t.Setenv("MULTICA_WORKSPACE_ID", "test-ws")
 	t.Setenv("MULTICA_TOKEN", "test-token")
@@ -226,16 +806,134 @@ func TestAgentUpdateNoFieldsErrorPointsAtEnvCommand(t *testing.T) {
 	}
 }
 
-// TestAgentUpdateDoesNotExposeCustomEnvFlags is the inverse guarantee
-// for the above test: if someone re-adds the --custom-env* flags to
-// `agent update`, this fails loudly. The /env path is the only
-// audited surface and we don't want a silent regression.
-func TestAgentUpdateDoesNotExposeCustomEnvFlags(t *testing.T) {
-	for _, flag := range []string{"custom-env", "custom-env-stdin", "custom-env-file"} {
-		if agentUpdateCmd.Flag(flag) != nil {
-			t.Errorf("agent update must NOT expose --%s after MUL-2600; use `multica agent env set` instead", flag)
-		}
+func TestAgentMaxConcurrentTasksFlagValidation(t *testing.T) {
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	var requestCount int
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	redirectTestHome(t, t.TempDir())
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	newCreateCmd := func(t *testing.T, value string) *cobra.Command {
+		t.Helper()
+		cmd := &cobra.Command{Use: "create"}
+		cmd.Flags().String("name", "", "")
+		cmd.Flags().String("runtime-id", "", "")
+		cmd.Flags().Int32("max-concurrent-tasks", 6, "")
+		cmd.Flags().String("output", "json", "")
+		cmd.Flags().String("profile", "", "")
+		if err := cmd.Flags().Set("name", "TestAgent"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Flags().Set("runtime-id", "runtime-1"); err != nil {
+			t.Fatal(err)
+		}
+		if value != "" {
+			if err := cmd.Flags().Set("max-concurrent-tasks", value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return cmd
+	}
+	newUpdateCmd := func(t *testing.T, value string) *cobra.Command {
+		t.Helper()
+		cmd := &cobra.Command{Use: "update"}
+		cmd.Flags().Int32("max-concurrent-tasks", 0, "")
+		cmd.Flags().String("output", "json", "")
+		cmd.Flags().String("profile", "", "")
+		if err := cmd.Flags().Set("max-concurrent-tasks", value); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+
+	for _, value := range []string{"0", "-1", "51"} {
+		t.Run("create rejects "+value, func(t *testing.T) {
+			before := requestCount
+			err := runAgentCreate(newCreateCmd(t, value), nil)
+			if err == nil || !strings.Contains(err.Error(), "between 1 and 50") {
+				t.Fatalf("error = %v, want readable 1-50 validation error", err)
+			}
+			if requestCount != before {
+				t.Fatalf("invalid create sent %d HTTP request(s), want 0", requestCount-before)
+			}
+		})
+
+		t.Run("update rejects "+value, func(t *testing.T) {
+			before := requestCount
+			err := runAgentUpdate(newUpdateCmd(t, value), []string{"agent-123"})
+			if err == nil || !strings.Contains(err.Error(), "between 1 and 50") {
+				t.Fatalf("error = %v, want readable 1-50 validation error", err)
+			}
+			if requestCount != before {
+				t.Fatalf("invalid update sent %d HTTP request(s), want 0", requestCount-before)
+			}
+		})
+	}
+
+	for _, value := range []string{"1", "50"} {
+		t.Run("create accepts "+value, func(t *testing.T) {
+			gotBody = nil
+			if err := runAgentCreate(newCreateCmd(t, value), nil); err != nil {
+				t.Fatalf("runAgentCreate: %v", err)
+			}
+			want := float64(1)
+			if value == "50" {
+				want = 50
+			}
+			if gotBody["max_concurrent_tasks"] != want {
+				t.Fatalf("body max_concurrent_tasks = %v, want %v", gotBody["max_concurrent_tasks"], want)
+			}
+		})
+
+		t.Run("update accepts "+value, func(t *testing.T) {
+			gotBody = nil
+			if err := runAgentUpdate(newUpdateCmd(t, value), []string{"agent-123"}); err != nil {
+				t.Fatalf("runAgentUpdate: %v", err)
+			}
+			want := float64(1)
+			if value == "50" {
+				want = 50
+			}
+			if gotBody["max_concurrent_tasks"] != want {
+				t.Fatalf("body max_concurrent_tasks = %v, want %v", gotBody["max_concurrent_tasks"], want)
+			}
+		})
+	}
+
+	t.Run("create omission stays omitted", func(t *testing.T) {
+		gotBody = nil
+		if err := runAgentCreate(newCreateCmd(t, ""), nil); err != nil {
+			t.Fatalf("runAgentCreate: %v", err)
+		}
+		if _, ok := gotBody["max_concurrent_tasks"]; ok {
+			t.Fatalf("omitted flag should not be sent: %v", gotBody)
+		}
+	})
 }
 
 // TestParseCustomEnvErrorSanitization guards against future changes
@@ -274,37 +972,6 @@ func TestParseCustomArgsErrorSanitization(t *testing.T) {
 	for _, leak := range []string{"--api-key", "verySensitiveValue", "oops"} {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("parseCustomArgs error leaked input fragment %q: %q", leak, msg)
-		}
-	}
-}
-
-// TestAgentCreateAndEnvSetExposeSecretSafeFlags guarantees the
-// --custom-env-stdin and --custom-env-file alternatives stay wired
-// up on both commands that accept env input (`agent create` and the
-// new `agent env set`). They exist specifically so callers can keep
-// secret material out of shell history / 'ps'; regressing either
-// surface reopens the foot-gun.
-func TestAgentCreateAndEnvSetExposeSecretSafeFlags(t *testing.T) {
-	for _, flag := range []string{"custom-env-stdin", "custom-env-file"} {
-		if agentCreateCmd.Flag(flag) == nil {
-			t.Fatalf("agent create must expose --%s", flag)
-		}
-		if agentEnvSetCmd.Flag(flag) == nil {
-			t.Fatalf("agent env set must expose --%s", flag)
-		}
-	}
-	// The --custom-env help text must warn users that argv is visible
-	// to shell history / 'ps' — "never logged" alone is misleading.
-	for _, c := range []struct {
-		name  string
-		usage string
-	}{
-		{"agent create", agentCreateCmd.Flag("custom-env").Usage},
-		{"agent env set", agentEnvSetCmd.Flag("custom-env").Usage},
-	} {
-		low := strings.ToLower(c.usage)
-		if !strings.Contains(low, "shell history") || !strings.Contains(low, "'ps'") {
-			t.Fatalf("%s --custom-env usage must warn about shell history and 'ps' exposure; got: %q", c.name, c.usage)
 		}
 	}
 }
@@ -496,6 +1163,175 @@ func TestResolveCustomEnv(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, map[string]string{}) {
 			t.Fatalf("file {}: got %v, want empty map", got)
+		}
+	})
+}
+
+// freshMcpConfigCmd returns a standalone cobra.Command with the three
+// --mcp-config* flags registered identically to `agent create` / `agent
+// update`, so resolveMcpConfig-shaped tests can mutate flag state without
+// leaking across subtests.
+func freshMcpConfigCmd() *cobra.Command {
+	c := &cobra.Command{Use: "x"}
+	c.Flags().String("mcp-config", "", "")
+	c.Flags().Bool("mcp-config-stdin", false, "")
+	c.Flags().String("mcp-config-file", "", "")
+	return c
+}
+
+func TestParseMcpConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    string // expected raw JSON; ignored when wantErr
+		wantErr bool
+	}{
+		{name: "object with servers", raw: `{"mcpServers":{"shortcut":{"command":"npx"}}}`, want: `{"mcpServers":{"shortcut":{"command":"npx"}}}`},
+		{name: "explicit empty object is a valid empty set", raw: `{}`, want: `{}`},
+		{name: "null clears", raw: `null`, want: `null`},
+		{name: "null with surrounding whitespace clears", raw: "  null\n", want: `null`},
+		{name: "empty string errors", raw: ``, wantErr: true},
+		{name: "whitespace only errors", raw: `   `, wantErr: true},
+		{name: "not JSON", raw: `command=npx`, wantErr: true},
+		{name: "top-level array rejected", raw: `[{"a":1}]`, wantErr: true},
+		{name: "top-level string rejected", raw: `"oops"`, wantErr: true},
+		{name: "top-level number rejected", raw: `42`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseMcpConfig(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseMcpConfig(%q): expected error, got nil (result=%s)", tc.raw, got)
+				}
+				if !strings.Contains(err.Error(), "--mcp-config") {
+					t.Fatalf("parseMcpConfig(%q): error should mention --mcp-config, got %v", tc.raw, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseMcpConfig(%q): unexpected error: %v", tc.raw, err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("parseMcpConfig(%q) = %s, want %s", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseMcpConfigErrorSanitization mirrors the parseCustomEnv check:
+// mcp_config carries secret material (MCP entries embed API tokens), so a
+// json.Unmarshal failure must never echo fragments of the input.
+func TestParseMcpConfigErrorSanitization(t *testing.T) {
+	secretish := `{"mcpServers":{"x":{"env":{"TOKEN":verySensitiveValue}}}}` // invalid JSON, unquoted value
+	_, err := parseMcpConfig(secretish)
+	if err == nil {
+		t.Fatal("expected parse error for invalid JSON")
+	}
+	msg := err.Error()
+	for _, leak := range []string{"TOKEN", "verySensitiveValue", "mcpServers"} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("parseMcpConfig error leaked input fragment %q: %q", leak, msg)
+		}
+	}
+}
+
+// TestResolveMcpConfig exercises the input-channel resolver: inline flag,
+// stdin, file, the `null` clear sentinel, mutual exclusion, and the
+// "not supplied" path.
+func TestResolveMcpConfig(t *testing.T) {
+	t.Run("not supplied", func(t *testing.T) {
+		cmd := freshMcpConfigCmd()
+		got, ok, err := resolveMcpConfig(cmd)
+		if err != nil || ok || got != nil {
+			t.Fatalf("unset flags: got=%s ok=%v err=%v", got, ok, err)
+		}
+	})
+
+	t.Run("inline object", func(t *testing.T) {
+		cmd := freshMcpConfigCmd()
+		if err := cmd.Flags().Set("mcp-config", `{"mcpServers":{}}`); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := resolveMcpConfig(cmd)
+		if err != nil || !ok {
+			t.Fatalf("inline: ok=%v err=%v", ok, err)
+		}
+		if string(got) != `{"mcpServers":{}}` {
+			t.Fatalf("inline: got %s", got)
+		}
+	})
+
+	t.Run("inline null clears", func(t *testing.T) {
+		cmd := freshMcpConfigCmd()
+		_ = cmd.Flags().Set("mcp-config", `null`)
+		got, ok, err := resolveMcpConfig(cmd)
+		if err != nil || !ok {
+			t.Fatalf("null: ok=%v err=%v", ok, err)
+		}
+		if string(got) != `null` {
+			t.Fatalf("null: got %s, want null", got)
+		}
+	})
+
+	t.Run("stdin", func(t *testing.T) {
+		cmd := freshMcpConfigCmd()
+		_ = cmd.Flags().Set("mcp-config-stdin", "true")
+		cmd.SetIn(bytes.NewBufferString(`{"mcpServers":{"a":{}}}`))
+		got, ok, err := resolveMcpConfig(cmd)
+		if err != nil || !ok {
+			t.Fatalf("stdin: ok=%v err=%v", ok, err)
+		}
+		if string(got) != `{"mcpServers":{"a":{}}}` {
+			t.Fatalf("stdin: got %s", got)
+		}
+	})
+
+	t.Run("file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "mcp.json")
+		if err := os.WriteFile(path, []byte(`{"mcpServers":{"b":{}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := freshMcpConfigCmd()
+		_ = cmd.Flags().Set("mcp-config-file", path)
+		got, ok, err := resolveMcpConfig(cmd)
+		if err != nil || !ok {
+			t.Fatalf("file: ok=%v err=%v", ok, err)
+		}
+		if string(got) != `{"mcpServers":{"b":{}}}` {
+			t.Fatalf("file: got %s", got)
+		}
+	})
+
+	t.Run("mutually exclusive: inline + stdin", func(t *testing.T) {
+		cmd := freshMcpConfigCmd()
+		_ = cmd.Flags().Set("mcp-config", `{}`)
+		_ = cmd.Flags().Set("mcp-config-stdin", "true")
+		_, _, err := resolveMcpConfig(cmd)
+		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("expected mutual-exclusion error, got %v", err)
+		}
+	})
+
+	// Empty stdin almost always means an upstream failure, not a deliberate
+	// clear — it must error rather than silently wipe a secret-bearing field.
+	t.Run("stdin: empty input errors", func(t *testing.T) {
+		cmd := freshMcpConfigCmd()
+		_ = cmd.Flags().Set("mcp-config-stdin", "true")
+		cmd.SetIn(bytes.NewBufferString(""))
+		_, _, err := resolveMcpConfig(cmd)
+		if err == nil || !strings.Contains(err.Error(), "--mcp-config-stdin") || !strings.Contains(err.Error(), "null") {
+			t.Fatalf("expected --mcp-config-stdin empty-input error mentioning 'null', got %v", err)
+		}
+	})
+
+	t.Run("file: missing path surfaces filesystem error", func(t *testing.T) {
+		cmd := freshMcpConfigCmd()
+		_ = cmd.Flags().Set("mcp-config-file", filepath.Join(t.TempDir(), "nope.json"))
+		_, _, err := resolveMcpConfig(cmd)
+		if err == nil || !strings.Contains(err.Error(), "--mcp-config-file") {
+			t.Fatalf("expected --mcp-config-file error, got %v", err)
 		}
 	})
 }
@@ -975,12 +1811,14 @@ func TestAgentGetTableIncludesAvatarURL(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
+	drainCh := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(r); drainCh <- b }()
 
 	err := runAgentGet(cmd, []string{"agent-123"})
 
 	w.Close()
 	os.Stdout = old
-	out, _ := io.ReadAll(r)
+	out := <-drainCh
 
 	if err != nil {
 		t.Fatalf("runAgentGet: %v", err)
@@ -991,4 +1829,473 @@ func TestAgentGetTableIncludesAvatarURL(t *testing.T) {
 	if !strings.Contains(string(out), "https://cdn.example.com/avatar.png") {
 		t.Fatalf("table output missing avatar_url value: %s", string(out))
 	}
+}
+
+// TestAgentCreateSendsThinkingLevel verifies `agent create --thinking-level`
+// puts the value on the top-level `thinking_level` key of the POST body —
+// the same field the web inspector and HTTP API already accept. The value is
+// passed through verbatim; provider-level validation is the server's job
+// (IsKnownThinkingValue), exactly as `--model` defers model validation.
+func TestAgentCreateSendsThinkingLevel(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent", "thinking_level": "high"})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().String("name", "", "")
+	cmd.Flags().String("runtime-id", "", "")
+	cmd.Flags().String("description", "", "")
+	cmd.Flags().String("instructions", "", "")
+	cmd.Flags().String("thinking-level", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("name", "TestAgent")
+	_ = cmd.Flags().Set("runtime-id", "runtime-1")
+	_ = cmd.Flags().Set("thinking-level", "high")
+
+	if err := runAgentCreate(cmd, nil); err != nil {
+		t.Fatalf("runAgentCreate: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/api/agents" {
+		t.Fatalf("path = %q, want /api/agents", gotPath)
+	}
+	if gotBody["thinking_level"] != "high" {
+		t.Fatalf("thinking_level body = %v, want high", gotBody["thinking_level"])
+	}
+}
+
+// TestAgentCreateOmitsThinkingLevelWhenUnset guards the Changed-gated send:
+// an unset --thinking-level must not appear in the body at all, so the server
+// applies its default instead of receiving an explicit empty string.
+func TestAgentCreateOmitsThinkingLevelWhenUnset(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().String("name", "", "")
+	cmd.Flags().String("runtime-id", "", "")
+	cmd.Flags().String("thinking-level", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("name", "TestAgent")
+	_ = cmd.Flags().Set("runtime-id", "runtime-1")
+
+	if err := runAgentCreate(cmd, nil); err != nil {
+		t.Fatalf("runAgentCreate: %v", err)
+	}
+	if _, ok := gotBody["thinking_level"]; ok {
+		t.Fatalf("unset --thinking-level must be omitted from the body; got %v", gotBody)
+	}
+}
+
+// TestAgentUpdateSendsThinkingLevel covers both update modes that mirror
+// --model: setting an explicit level, and passing an empty string to clear
+// back to the runtime default. In both cases the key must be present in the
+// PUT body — the server reads it as a tri-state pointer (omitted = no change,
+// "" = clear, value = set), so the CLI's only job is to send the key when the
+// flag was provided.
+func TestAgentUpdateSendsThinkingLevel(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"set explicit level", "xhigh"},
+		{"empty string clears", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotMethod, gotPath string
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent", "thinking_level": tc.value})
+			}))
+			defer srv.Close()
+
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "test-token")
+			t.Setenv("MULTICA_AGENT_ID", "")
+			t.Setenv("MULTICA_TASK_ID", "")
+
+			cmd := &cobra.Command{Use: "update"}
+			cmd.Flags().String("thinking-level", "", "")
+			cmd.Flags().String("output", "json", "")
+			cmd.Flags().String("profile", "", "")
+			if err := cmd.Flags().Set("thinking-level", tc.value); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := runAgentUpdate(cmd, []string{"agent-123"}); err != nil {
+				t.Fatalf("runAgentUpdate: %v", err)
+			}
+			if gotMethod != http.MethodPut {
+				t.Fatalf("method = %s, want PUT", gotMethod)
+			}
+			if gotPath != "/api/agents/agent-123" {
+				t.Fatalf("path = %q, want /api/agents/agent-123", gotPath)
+			}
+			v, ok := gotBody["thinking_level"]
+			if !ok {
+				t.Fatalf("body missing thinking_level key; got %v", gotBody)
+			}
+			if v != tc.value {
+				t.Fatalf("thinking_level body = %v, want %q", v, tc.value)
+			}
+		})
+	}
+}
+
+func TestAgentServiceTierFlagsAndBodies(t *testing.T) {
+	if agentCreateCmd.Flag("service-tier") == nil {
+		t.Error("agent create must expose --service-tier")
+	}
+	if agentUpdateCmd.Flag("service-tier") == nil {
+		t.Error("agent update must expose --service-tier")
+	}
+	for name, usage := range map[string]string{
+		"create": agentCreateCmd.Flag("service-tier").Usage,
+		"update": agentUpdateCmd.Flag("service-tier").Usage,
+	} {
+		for _, contract := range []string{"empty", "default", "Standard", "priority", "Fast"} {
+			if !strings.Contains(usage, contract) {
+				t.Errorf("agent %s --service-tier help = %q, want three-state contract to mention %q", name, usage, contract)
+			}
+		}
+	}
+
+	t.Run("create sends catalog id", func(t *testing.T) {
+		var gotBody map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"id": "agent-123"})
+		}))
+		defer srv.Close()
+		t.Setenv("MULTICA_SERVER_URL", srv.URL)
+		t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+		t.Setenv("MULTICA_TOKEN", "test-token")
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+
+		cmd := &cobra.Command{Use: "create"}
+		cmd.Flags().String("name", "", "")
+		cmd.Flags().String("runtime-id", "", "")
+		cmd.Flags().String("service-tier", "", "")
+		cmd.Flags().String("output", "json", "")
+		cmd.Flags().String("profile", "", "")
+		_ = cmd.Flags().Set("name", "FastAgent")
+		_ = cmd.Flags().Set("runtime-id", "runtime-1")
+		_ = cmd.Flags().Set("service-tier", "priority")
+
+		if err := runAgentCreate(cmd, nil); err != nil {
+			t.Fatalf("runAgentCreate: %v", err)
+		}
+		if gotBody["service_tier"] != "priority" {
+			t.Fatalf("service_tier body = %v, want priority", gotBody["service_tier"])
+		}
+	})
+
+	t.Run("update sends explicit clear", func(t *testing.T) {
+		var gotBody map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"id": "agent-123"})
+		}))
+		defer srv.Close()
+		t.Setenv("MULTICA_SERVER_URL", srv.URL)
+		t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+		t.Setenv("MULTICA_TOKEN", "test-token")
+		t.Setenv("MULTICA_AGENT_ID", "")
+		t.Setenv("MULTICA_TASK_ID", "")
+
+		cmd := &cobra.Command{Use: "update"}
+		cmd.Flags().String("service-tier", "", "")
+		cmd.Flags().String("output", "json", "")
+		cmd.Flags().String("profile", "", "")
+		if err := cmd.Flags().Set("service-tier", ""); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runAgentUpdate(cmd, []string{"agent-123"}); err != nil {
+			t.Fatalf("runAgentUpdate: %v", err)
+		}
+		if value, ok := gotBody["service_tier"]; !ok || value != "" {
+			t.Fatalf("service_tier clear body = %v (exists=%v), want empty string", value, ok)
+		}
+	})
+}
+
+// TestAgentCreateThinkingLevelServerRejectionSurfaces proves the CLI does not
+// own thinking-level validation: a runtime whose provider has no thinking
+// concept (or an unknown literal) is rejected server-side with a 400, and that
+// message must reach the user rather than being swallowed. This is why the CLI
+// can stay a thin pass-through — the server already owns the (provider, model)
+// catalog (server/pkg/agent/thinking.go).
+func TestAgentCreateThinkingLevelServerRejectionSurfaces(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":"thinking_level \"max\" is not a recognised value for runtime \"gemini\""}`)
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().String("name", "", "")
+	cmd.Flags().String("runtime-id", "", "")
+	cmd.Flags().String("thinking-level", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("name", "TestAgent")
+	_ = cmd.Flags().Set("runtime-id", "runtime-gemini")
+	_ = cmd.Flags().Set("thinking-level", "max")
+
+	err := runAgentCreate(cmd, nil)
+	if err == nil {
+		t.Fatal("expected error when server rejects thinking_level, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a recognised value for runtime") {
+		t.Fatalf("server thinking_level rejection should surface to the user; got: %v", err)
+	}
+}
+
+func TestAgentCreateSendsConversationStarters(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().String("name", "", "")
+	cmd.Flags().String("runtime-id", "", "")
+	cmd.Flags().String("conversation-starters", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("name", "TestAgent")
+	_ = cmd.Flags().Set("runtime-id", "runtime-1")
+	_ = cmd.Flags().Set("conversation-starters", `[{"label":"Review a PR","prompt":"Review the open pull request."}]`)
+
+	if err := runAgentCreate(cmd, nil); err != nil {
+		t.Fatalf("runAgentCreate: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/api/agents" {
+		t.Fatalf("path = %q, want /api/agents", gotPath)
+	}
+	got, ok := gotBody["conversation_starters"].([]any)
+	if !ok {
+		t.Fatalf("conversation_starters body = %v, want array", gotBody["conversation_starters"])
+	}
+	if !reflect.DeepEqual(got, []any{
+		map[string]any{"label": "Review a PR", "prompt": "Review the open pull request."},
+	}) {
+		t.Fatalf("conversation_starters body = %v", got)
+	}
+}
+
+func TestAgentCreateOmitsConversationStartersWhenUnset(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "create"}
+	cmd.Flags().String("name", "", "")
+	cmd.Flags().String("runtime-id", "", "")
+	cmd.Flags().String("conversation-starters", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	_ = cmd.Flags().Set("name", "TestAgent")
+	_ = cmd.Flags().Set("runtime-id", "runtime-1")
+
+	if err := runAgentCreate(cmd, nil); err != nil {
+		t.Fatalf("runAgentCreate: %v", err)
+	}
+	if _, ok := gotBody["conversation_starters"]; ok {
+		t.Fatalf("unset --conversation-starters must be omitted from the body; got %v", gotBody)
+	}
+}
+
+func TestAgentUpdateSendsConversationStarters(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  []any
+	}{
+		{
+			name:  "set explicit starters",
+			value: `[{"label":"Review a PR","prompt":"Review the open pull request."}]`,
+			want: []any{
+				map[string]any{"label": "Review a PR", "prompt": "Review the open pull request."},
+			},
+		},
+		{"empty array clears", "[]", []any{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotMethod, gotPath string
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+			}))
+			defer srv.Close()
+
+			t.Chdir(t.TempDir())
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "test-token")
+			t.Setenv("MULTICA_AGENT_ID", "")
+			t.Setenv("MULTICA_TASK_ID", "")
+
+			cmd := &cobra.Command{Use: "update"}
+			cmd.Flags().String("conversation-starters", "", "")
+			cmd.Flags().String("output", "json", "")
+			cmd.Flags().String("profile", "", "")
+			if err := cmd.Flags().Set("conversation-starters", tc.value); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := runAgentUpdate(cmd, []string{"agent-123"}); err != nil {
+				t.Fatalf("runAgentUpdate: %v", err)
+			}
+			if gotMethod != http.MethodPut {
+				t.Fatalf("method = %s, want PUT", gotMethod)
+			}
+			if gotPath != "/api/agents/agent-123" {
+				t.Fatalf("path = %q, want /api/agents/agent-123", gotPath)
+			}
+			got, ok := gotBody["conversation_starters"].([]any)
+			if !ok {
+				t.Fatalf("body missing conversation_starters array; got %v", gotBody)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("conversation_starters body = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentCreateAndUpdateExposeConversationStartersFlag(t *testing.T) {
+	if agentCreateCmd.Flag("conversation-starters") == nil {
+		t.Error("agent create must expose --conversation-starters")
+	}
+	if agentUpdateCmd.Flag("conversation-starters") == nil {
+		t.Error("agent update must expose --conversation-starters")
+	}
+	for name, usage := range map[string]string{
+		"create": agentCreateCmd.Flag("conversation-starters").Usage,
+		"update": agentUpdateCmd.Flag("conversation-starters").Usage,
+	} {
+		for _, contract := range []string{`{"label","prompt"}`, "3"} {
+			if !strings.Contains(usage, contract) {
+				t.Errorf("agent %s --conversation-starters help = %q, want %q", name, usage, contract)
+			}
+		}
+	}
+	if !strings.Contains(agentUpdateCmd.Flag("conversation-starters").Usage, "[]") {
+		t.Errorf("agent update --conversation-starters help must mention [] to clear; got %q", agentUpdateCmd.Flag("conversation-starters").Usage)
+	}
+}
+
+func TestParseConversationStarters(t *testing.T) {
+	t.Run("empty array", func(t *testing.T) {
+		got, err := parseConversationStarters("[]")
+		if err != nil {
+			t.Fatalf("parseConversationStarters([]): %v", err)
+		}
+		if got == nil || len(got) != 0 {
+			t.Fatalf("got %#v, want empty non-nil slice", got)
+		}
+	})
+	t.Run("rejects null", func(t *testing.T) {
+		_, err := parseConversationStarters("null")
+		if err == nil || !strings.Contains(err.Error(), "[]") {
+			t.Fatalf("expected []-to-clear error, got %v", err)
+		}
+	})
+	t.Run("rejects more than three", func(t *testing.T) {
+		_, err := parseConversationStarters(`[{"label":"a","prompt":"a"},{"label":"b","prompt":"b"},{"label":"c","prompt":"c"},{"label":"d","prompt":"d"}]`)
+		if err == nil || !strings.Contains(err.Error(), "at most 3") {
+			t.Fatalf("expected max-3 error, got %v", err)
+		}
+	})
+	t.Run("rejects object", func(t *testing.T) {
+		_, err := parseConversationStarters(`{"label":"a","prompt":"a"}`)
+		if err == nil || !strings.Contains(err.Error(), "JSON array") {
+			t.Fatalf("expected array error, got %v", err)
+		}
+	})
 }
