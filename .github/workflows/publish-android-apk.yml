@@ -5,6 +5,9 @@ on:
       run_id:
         description: Successful main-branch Android Release APK run ID
         required: true
+      smoke_run_id:
+        description: Successful standalone startup verification of this build (if rechecking a failed inline test)
+        required: false
       release_tag:
         description: Existing draft release tag
         required: true
@@ -18,6 +21,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ inputs.run_id }}
+      SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - name: Validate build and draft release
@@ -25,7 +29,16 @@ jobs:
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ ]]
           gh run view "$RUN_ID" --json conclusion,headBranch,headSha,workflowName > run.json
-          jq -e '.conclusion == "success" and .headBranch == "main" and .workflowName == "Android Release APK"' run.json
+          jq -e '.headBranch == "main" and .workflowName == "Android Release APK"' run.json
+          if ! jq -e '.conclusion == "success"' run.json; then
+            [[ "$SMOKE_RUN_ID" =~ ^[0-9]+$ ]]
+            gh run view "$RUN_ID" --json jobs > jobs.json
+            jq -e '[.jobs[].steps[] | select(.conclusion == "failure") | .name] == ["Verify release startup"]' jobs.json
+            gh run view "$SMOKE_RUN_ID" --json conclusion,headBranch,workflowName > smoke.json
+            jq -e '.conclusion == "success" and .headBranch == "main" and .workflowName == "Android Startup Smoke"' smoke.json
+            gh run download "$SMOKE_RUN_ID" --name android-startup-diagnostics --dir proof
+            test "$(cat proof/verified-build.txt)" = "$RUN_ID"
+          fi
           gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > release.json
           jq -e '.isDraft == true' release.json
           test "$(jq -r .headSha run.json)" = "$(jq -r .targetCommitish release.json)"

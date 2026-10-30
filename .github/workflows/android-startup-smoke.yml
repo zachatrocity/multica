@@ -48,6 +48,11 @@ jobs:
           arch: x86_64
           target: google_apis
           script: bash .github/scripts/android-startup-smoke.sh
+      - name: Record verified build provenance
+        if: success() && !inputs.test_fbjni_pin
+        env:
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: echo "$SOURCE_RUN_ID" > diagnostics/verified-build.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
