@@ -1,0 +1,41 @@
+name: Publish Android APK
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful main-branch Android Release APK run ID
+        required: true
+      release_tag:
+        description: Existing draft release tag
+        required: true
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ inputs.run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Validate build and draft release
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh run view "$RUN_ID" --json conclusion,headBranch,headSha,workflowName > run.json
+          jq -e '.conclusion == "success" and .headBranch == "main" and .workflowName == "Android Release APK"' run.json
+          gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > release.json
+          jq -e '.isDraft == true' release.json
+          test "$(jq -r .headSha run.json)" = "$(jq -r .targetCommitish release.json)"
+      - name: Download and publish verified build artifact
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --name multica-android-release-apk --dir apk
+          test -s apk/app-release.apk
+          mv apk/app-release.apk apk/multica-android.apk
+          cd apk
+          sha256sum multica-android.apk > SHA256SUMS
+          gh release upload "$RELEASE_TAG" multica-android.apk SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
