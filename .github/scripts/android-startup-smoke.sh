@@ -15,4 +15,4 @@ if grep -E 'FATAL EXCEPTION|Fatal signal|JavascriptException' diagnostics/logcat
   exit 1
 fi
 grep -q 'ai.multica.mobile' diagnostics/window.xml
-grep -q 'Email' diagnostics/window.xml
+grep -q 'Sign in to Multica' diagnostics/window.xml
