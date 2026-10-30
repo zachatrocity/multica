@@ -6,6 +6,10 @@ on:
         description: Android Release APK build run
         required: true
         default: "40984389228"
+      test_fbjni_pin:
+        description: Test React Native fbjni pin against an existing APK (diagnostic only)
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -21,6 +25,18 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
           path: apk
+      - name: Apply diagnostic native-library replacement
+        if: inputs.test_fbjni_pin
+        run: |
+          set -euo pipefail
+          curl -fsSL https://repo.maven.apache.org/maven2/com/facebook/fbjni/fbjni/0.7.0/fbjni-0.7.0.aar -o fbjni.aar
+          unzip -q fbjni.aar 'jni/*' -d native
+          mv native/jni native/lib
+          (cd native && zip -q -u ../apk/app-release.apk lib/*/libfbjni.so)
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BUILD_TOOLS/zipalign" -f -P 16 4 apk/app-release.apk apk/aligned.apk
+          keytool -genkeypair -keystore diagnostic.jks -storepass android -keypass android -alias diagnostic -dname CN=Diagnostic -keyalg RSA -validity 2
+          "$BUILD_TOOLS/apksigner" sign --ks diagnostic.jks --ks-pass pass:android --key-pass pass:android --out apk/app-release.apk apk/aligned.apk
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
