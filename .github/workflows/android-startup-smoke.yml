@@ -32,7 +32,7 @@ jobs:
           curl -fsSL https://repo.maven.apache.org/maven2/com/facebook/fbjni/fbjni/0.7.0/fbjni-0.7.0.aar -o fbjni.aar
           unzip -q fbjni.aar 'jni/*' -d native
           mv native/jni native/lib
-          (cd native && zip -q -u ../apk/app-release.apk lib/*/libfbjni.so)
+          (cd native && zip -q ../apk/app-release.apk lib/*/libfbjni.so)
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$BUILD_TOOLS/zipalign" -f -P 16 4 apk/app-release.apk apk/aligned.apk
           keytool -genkeypair -keystore diagnostic.jks -storepass android -keypass android -alias diagnostic -dname CN=Diagnostic -keyalg RSA -validity 2
