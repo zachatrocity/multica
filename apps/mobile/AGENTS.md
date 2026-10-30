@@ -92,3 +92,8 @@ pnpm --filter @multica/mobile test
 - For UI changes, verify the affected flow in the simulator/device, including themes, keyboard/scrolling, and navigation. For shared semantics or realtime changes, change the same data from web and confirm mobile catches up without manual refresh, including after reconnect.
 - Test parsing/transforms in the existing Vitest setup. Preserve `scripts/ios-run.test.sh` coverage when changing the native build wrapper.
 - Report which checks ran and which native/cross-client checks were unavailable. Do not claim visual or release verification from typecheck/unit tests alone.
+
+### Fork Android release verification
+
+- Preserve the fbjni config plugin: it aligns native dependency resolution with React Native's version catalog during prebuild.
+- The Android Release APK workflow must pass the emulator cold-start test before publication. Inspect its login-screen screenshot and crash logs; compilation alone is insufficient.

@@ -63,7 +63,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           : (process.env.EXPO_BUNDLE_IDENTIFIER_DEV ?? "ai.multica.mobile.dev"),
     },
     android: {
-      versionCode: 2026102901,
+      versionCode: 2026102902,
       // Mirror the iOS variant split so CI can prebuild a deterministic
       // Android app id for debug APKs without editing native files by hand.
       package: isProd
@@ -73,6 +73,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           : (process.env.EXPO_ANDROID_PACKAGE_DEV ?? "ai.multica.mobile.dev"),
     },
     plugins: [
+      "./plugins/with-fbjni-version",
       "expo-router",
       "expo-image",
       "expo-localization",

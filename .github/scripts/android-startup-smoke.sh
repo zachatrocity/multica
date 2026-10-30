@@ -14,3 +14,5 @@ adb shell pidof ai.multica.mobile
 if grep -E 'FATAL EXCEPTION|Fatal signal|JavascriptException' diagnostics/logcat.txt; then
   exit 1
 fi
+grep -q 'ai.multica.mobile' diagnostics/window.xml
+grep -q 'Email' diagnostics/window.xml
