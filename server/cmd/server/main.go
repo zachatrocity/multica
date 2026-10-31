@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/androidpush"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/database"
@@ -609,12 +610,18 @@ func main() {
 
 	queries := db.New(pool)
 	hub.SetAuthorizer(newScopeAuthorizer(queries))
+	androidPush, err := androidpush.NewFromEnv(pool, slog.Default())
+	if err != nil {
+		slog.Error("invalid ntfy Android push configuration", "error", err)
+		os.Exit(1)
+	}
+
 	// Order matters: subscriber listeners must register BEFORE notification listeners.
 	// The notification listener queries the subscriber table to determine recipients,
 	// so subscribers must be written first within the same synchronous event dispatch.
 	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
-	registerNotificationListeners(bus, queries)
+	registerNotificationListeners(bus, queries, androidPush)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
@@ -693,6 +700,7 @@ func main() {
 		HeartbeatScheduler:  heartbeatScheduler,
 		LLMMaxRetries:       llmMaxRetries,
 		LLMDisableThinking:  llmDisableThinking,
+		AndroidPush:         androidPush,
 	})
 	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
 	// stops writing it as well as sending the snapshot.
@@ -772,6 +780,9 @@ func main() {
 	go runDBStatsLogger(sweepCtx, "primary", pool)
 	if replicaPool != nil {
 		go runDBStatsLogger(sweepCtx, "replica", replicaPool)
+	}
+	if h.AndroidPush != nil {
+		go h.AndroidPush.Run(sweepCtx)
 	}
 	if h.WebhookDeliveryWorker != nil {
 		go h.WebhookDeliveryWorker.Run(sweepCtx)

@@ -612,6 +612,24 @@ RETURNING id
 INSERT INTO member (workspace_id, user_id, role)
 VALUES ($1, $2, 'owner')
 `, targetWorkspaceID, testUserID)
+	dbfx.Exec(t, `
+INSERT INTO member (workspace_id, user_id, role)
+VALUES ($1, $2, 'member')
+`, neighborWorkspaceID, testUserID)
+
+	var androidEndpointID string
+	dbfx.QueryRow(t, `
+INSERT INTO android_push_endpoint (
+	user_id, device_id, endpoint_encrypted, endpoint_hash, app_variant
+)
+VALUES ($1, 'workspace-delete-shared-device', '\x01'::bytea, '\x02'::bytea, 'test')
+RETURNING id
+`, testUserID).Scan(&androidEndpointID)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM android_push_delivery WHERE endpoint_id = $1`, androidEndpointID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM android_push_preference WHERE workspace_id IN ($1, $2)`, targetWorkspaceID, neighborWorkspaceID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM android_push_endpoint WHERE id = $1`, androidEndpointID)
+	})
 
 	type tenantFixture struct {
 		workspaceID string
@@ -656,6 +674,14 @@ INSERT INTO channel_media_pending_object (
 )
 VALUES ($1, $2, gen_random_uuid(), 's3://workspace-delete/tenant-isolation')
 `, fixture.mediaKey, fixture.workspaceID)
+		dbfx.Exec(t, `
+INSERT INTO android_push_preference (workspace_id, user_id, enabled, enabled_at)
+VALUES ($1, $2, true, now())
+`, fixture.workspaceID, testUserID)
+		dbfx.Exec(t, `
+INSERT INTO android_push_delivery (endpoint_id, event_id, workspace_id, event_type)
+VALUES ($1, gen_random_uuid(), $2, 'workspace-delete-test')
+`, androidEndpointID, fixture.workspaceID)
 	}
 
 	request := newRequest(http.MethodDelete, "/api/workspaces/"+targetWorkspaceID, nil)
@@ -670,6 +696,8 @@ VALUES ($1, $2, gen_random_uuid(), 's3://workspace-delete/tenant-isolation')
 		"runtime_profile":              "workspace_id",
 		"task_usage_hourly_dirty":      "workspace_id",
 		"channel_media_pending_object": "workspace_id",
+		"android_push_delivery":        "workspace_id",
+		"android_push_preference":      "workspace_id",
 	} {
 		var count int
 		dbfx.QueryRow(t, `
@@ -678,6 +706,18 @@ SELECT COUNT(*) FROM `+table+` WHERE `+predicate+` = $1
 		if count != 1 {
 			t.Fatalf("neighbor %s rows = %d, want 1", table, count)
 		}
+	}
+	for _, table := range []string{"android_push_delivery", "android_push_preference"} {
+		var count int
+		dbfx.QueryRow(t, `SELECT COUNT(*) FROM `+table+` WHERE workspace_id = $1`, targetWorkspaceID).Scan(&count)
+		if count != 0 {
+			t.Fatalf("target %s rows = %d, want 0", table, count)
+		}
+	}
+	var endpointCount int
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM android_push_endpoint WHERE id = $1`, androidEndpointID).Scan(&endpointCount)
+	if endpointCount != 1 {
+		t.Fatalf("shared Android endpoint rows = %d, want 1", endpointCount)
 	}
 
 	var neighborMediaState string

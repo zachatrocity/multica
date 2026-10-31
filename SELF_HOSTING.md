@@ -532,6 +532,10 @@ multica login
 multica daemon start
 ```
 
+## Optional Android alerts
+
+Android UnifiedPush alerts require a separately operated ntfy server and are disabled unless all publisher and encryption settings are present. See [Android alerts through ntfy and UnifiedPush](docs/android-ntfy-unifiedpush.md) for the ACL, TLS, environment, persistence, and key-rotation contract.
+
 ## Advanced Configuration
 
 For environment variables, manual setup (without Docker), reverse proxy configuration, database setup, and more, see the [Advanced Configuration Guide](SELF_HOSTING_ADVANCED.md).

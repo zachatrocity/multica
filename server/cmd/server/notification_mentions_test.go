@@ -103,7 +103,7 @@ func TestNotification_MalformedMemberMentionPreservesValidRecipients(t *testing.
 func TestNotifyMentionedMembersOnlyMalformedIDs(t *testing.T) {
 	// Call the boundary directly so the event bus cannot hide a panic. With
 	// no valid recipients, neither the database nor the bus is needed.
-	notifyMentionedMembers(nil, nil, events.Event{},
+	notifyMentionedMembers(nil, nil, nil, events.Event{},
 		parseMentions("[@Bad](mention://member/deadbeef) [@Bad all](mention://member/all)"),
 		"", "", "", "", nil, nil)
 }

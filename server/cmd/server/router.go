@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/androidpush"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
@@ -251,6 +252,7 @@ type RouterOptions struct {
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
 	// tests leave this nil and get the legacy synchronous behavior.
 	HeartbeatScheduler handler.HeartbeatScheduler
+	AndroidPush        *androidpush.Service
 	// LLMMaxRetries carries the parsed MULTICA_LLM_MAX_RETRIES budget. Unlike
 	// its three MULTICA_LLM_* siblings it is injected rather than read here,
 	// because an invalid value must fail the boot and only main() can exit —
@@ -457,6 +459,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	invitationRateLimits.Recipient.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_RECIPIENT_24H", invitationRateLimits.Recipient.Limit)
 	h.InvitationRateLimiters = handler.NewMemoryInvitationRateLimiters(invitationRateLimits)
 	h.Metrics = opts.BusinessMetrics
+	h.AndroidPush = opts.AndroidPush
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
@@ -1678,6 +1681,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/feedback", h.CreateFeedback)
 		r.With(handler.RequireHumanActor).Post("/api/client-usage", h.UpsertClientUsage)
 
+		r.Route("/api/android-push/endpoints", func(r chi.Router) {
+			r.Get("/", h.ListAndroidPushEndpoints)
+			r.Post("/", h.RegisterAndroidPushEndpoint)
+			r.Post("/revoke-device", h.RevokeAndroidPushDevice)
+			r.Patch("/{id}", h.UpdateAndroidPushEndpoint)
+			r.Delete("/{id}", h.DeleteAndroidPushEndpoint)
+		})
+
 		// Note (MUL-4309): the generic OpenAI-compatible passthrough endpoints
 		// (POST /api/llm/v1/chat/completions[/stream]) were intentionally
 		// removed. Exposing a general LLM proxy backed by the deployment's own
@@ -2511,6 +2522,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/", h.GetNotificationPreferences)
 				r.Patch("/", h.PatchNotificationPreferences)
 				r.Put("/", h.UpdateNotificationPreferences)
+			})
+
+			r.Route("/api/android-push", func(r chi.Router) {
+				r.Get("/preferences", h.GetAndroidPushPreference)
+				r.Patch("/preferences", h.PatchAndroidPushPreference)
+				r.Post("/test", h.TestAndroidPush)
 			})
 		})
 	})

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/androidpush"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -81,7 +85,7 @@ func newNotificationBus(t *testing.T, queries *db.Queries) *events.Bus {
 	t.Helper()
 	bus := events.New()
 	registerSubscriberListeners(bus, testPool)
-	registerNotificationListeners(bus, queries)
+	registerNotificationListeners(bus, queries, nil)
 	return bus
 }
 
@@ -381,6 +385,69 @@ func TestNotification_StatusChanged_Muted(t *testing.T) {
 	}
 	if items := inboxItemsForRecipient(t, queries, normalID); len(items) != 1 {
 		t.Fatalf("expected normal subscriber to receive 1 item, got %d", len(items))
+	}
+}
+func TestAndroidPushCommentPreferenceIsIndependentFromInboxMute(t *testing.T) {
+	queries := db.New(testPool)
+	recipientEmail := "notif-android-independent@multica.ai"
+	recipientID := createNotificationMember(t, recipientEmail)
+	t.Cleanup(func() { cleanupTestUser(t, recipientEmail) })
+
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+	addTestSubscriber(t, issueID, "member", recipientID, "commenter")
+
+	push, err := androidpush.New(testPool, androidpush.Config{
+		BaseURL: "https://ntfy.example.test", AccessToken: "test-token",
+		Key: bytes.Repeat([]byte{0x4A}, 32),
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := push.RegisterEndpoint(context.Background(), recipientID, "android-independent", "https://ntfy.example.test/topic", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	comments := true
+	if _, err := push.PatchPreference(context.Background(), testWorkspaceID, recipientID, androidpush.PreferencePatch{
+		Enabled: &enabled, Comments: &comments,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM android_push_delivery WHERE endpoint_id = $1`, endpoint.ID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM android_push_endpoint WHERE id = $1`, endpoint.ID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM android_push_preference WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, recipientID)
+	})
+
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO notification_preference (workspace_id, user_id, preferences)
+		VALUES ($1, $2, '{"comments":"muted"}'::jsonb)
+	`, testWorkspaceID, recipientID); err != nil {
+		t.Fatal(err)
+	}
+
+	notifySubscribers(context.Background(), queries, events.New(), push, issueID, "in_progress", testWorkspaceID,
+		events.Event{ActorType: "member", ActorID: testUserID}, nil, "new_comment", "info", "independent preferences", "", emptyDetails)
+
+	if items := inboxItemsForRecipient(t, queries, recipientID); len(items) != 0 {
+		t.Fatalf("muted inbox received %d comment items", len(items))
+	}
+	var deliveries int
+	var inboxIDs int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*), count(inbox_item_id)
+		FROM android_push_delivery
+		WHERE endpoint_id = $1 AND event_type = 'new_comment'
+	`, endpoint.ID).Scan(&deliveries, &inboxIDs); err != nil {
+		t.Fatal(err)
+	}
+	if deliveries != 1 || inboxIDs != 0 {
+		t.Fatalf("Android delivery count=%d inbox ids=%d, want one standalone delivery", deliveries, inboxIDs)
 	}
 }
 
