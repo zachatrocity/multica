@@ -96,6 +96,14 @@ editor, select an image, and confirm the upload completes. From the issue editor
 also attach a document and confirm its picker dismisses and the upload completes.
 Unit tests do not replace this device validation.
 
+### Android notification routing
+
+UnifiedPush transport code must queue the reviewed, versioned destination
+instead of opening payload-provided routes or URLs. See
+[`docs/notification-destinations.md`](./docs/notification-destinations.md) for
+the payload schema, auth resume lifecycle, workspace authorization checks,
+repeated-tap behavior, and recovery contract.
+
 ## First-time setup
 
 `.env.staging` is committed (public staging URL). `.env.development.local` is gitignored — copy the template once:

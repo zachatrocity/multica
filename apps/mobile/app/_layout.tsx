@@ -12,6 +12,7 @@ import { PortalHost } from "@rn-primitives/portal";
 import { api } from "@/data/api";
 import { maybeRenewSession } from "@/data/session-renewal";
 import { queryClient } from "@/data/query-client";
+import { NotificationDestinationResolver } from "@/data/use-notification-destination-resolver";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { SessionActivityBoundary } from "@/components/auth/session-activity-boundary";
@@ -85,6 +86,7 @@ export default function RootLayout() {
             <QueryClientProvider client={queryClient}>
               <ThemeProvider value={NAV_THEME[colorScheme]}>
                 <AuthInitializer>
+                  <NotificationDestinationResolver />
                   <SessionActivityBoundary>
                     <LightboxProvider>
                       <StatusBar style={isDarkColorScheme ? "light" : "dark"} />

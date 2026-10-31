@@ -10,12 +10,13 @@
  * Stack.Screen with title "Issue". We override that here once the data
  * lands so the navigation bar shows `MUL-123` (Linear-style).
  */
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
+  Pressable,
   View,
 } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
@@ -39,6 +40,7 @@ import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
 import { useAuthStore } from "@/data/auth-store";
 import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { confirmNotificationDestinationHandled } from "@/data/notification-destination-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
@@ -49,17 +51,30 @@ export default function IssueDetail() {
   // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
   // `h` is a per-tap nonce so re-tapping the same row re-fires the
   // scroll-and-flash effect.
-  const { id, workspace: wsSlug, highlight, h } = useLocalSearchParams<{
+  const {
+    id,
+    workspace: wsSlug,
+    highlight,
+    h,
+    notificationKey,
+    notificationNonce,
+    notificationNotice,
+  } = useLocalSearchParams<{
     id: string;
     workspace: string;
     highlight?: string;
     h?: string;
+    notificationKey?: string;
+    notificationNonce?: string;
+    notificationNotice?: "comment_unavailable" | "offline";
   }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
 
   const detail = useQuery(issueDetailOptions(wsId, id));
   const timeline = useQuery(issueTimelineOptions(wsId, id));
+  const [dismissedNotificationNonce, setDismissedNotificationNonce] =
+    useState<string | null>(null);
 
   // Subscribe to per-issue WS events: status/priority/assignee/label
   // changes, comments, activity, reactions, agent task progress.
@@ -77,6 +92,14 @@ export default function IssueDetail() {
       useViewedIssuesStore.getState().push(wsId, id);
     }
   }, [wsId, id]);
+
+  useEffect(() => {
+    if (!detail.data || !notificationKey || !notificationNonce) return;
+    void confirmNotificationDestinationHandled(
+      notificationKey,
+      notificationNonce,
+    );
+  }, [detail.data, notificationKey, notificationNonce]);
 
   // Screen-scoped composer state — clear on unmount so re-entering the
   // issue starts from a clean slate (no stale text-selection comment id,
@@ -212,18 +235,39 @@ export default function IssueDetail() {
           </Button>
         </View>
       ) : (
-        <View className="flex-1">
-          <TimelineList
-            issue={issue}
-            entries={timeline.data}
-            timelineLoading={timeline.isLoading}
-            refreshing={detail.isRefetching || timeline.isRefetching}
-            onRefresh={onRefresh}
-            highlightCommentId={highlight}
-            highlightNonce={h}
-          />
-          <InlineCommentComposer issueId={id} />
-        </View>
+        <>
+          {notificationNotice && dismissedNotificationNonce !== h ? (
+            <View className="mx-4 mt-3 flex-row items-center gap-3 rounded-md border border-border bg-muted px-3 py-2">
+              <Text className="flex-1 text-sm text-foreground">
+                {notificationNotice === "comment_unavailable"
+                  ? t("detail.notification_comment_unavailable")
+                  : t("detail.notification_offline")}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("common:actions.close")}
+                onPress={() => setDismissedNotificationNonce(h ?? "dismissed")}
+                hitSlop={8}
+              >
+                <Text className="text-sm font-medium text-primary">
+                  {t("common:actions.close")}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+          <View className="flex-1">
+            <TimelineList
+              issue={issue}
+              entries={timeline.data}
+              timelineLoading={timeline.isLoading}
+              refreshing={detail.isRefetching || timeline.isRefetching}
+              onRefresh={onRefresh}
+              highlightCommentId={highlight}
+              highlightNonce={h}
+            />
+            <InlineCommentComposer issueId={id} />
+          </View>
+        </>
       )}
     </View>
   );
