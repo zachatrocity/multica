@@ -8,12 +8,19 @@ import { TextField } from "@/components/ui/text-field";
 import { Button } from "@/components/ui/button";
 import { MulticaLogo } from "@/components/brand/multica-logo";
 import { useAuthStore } from "@/data/auth-store";
+import {
+  cancelPendingNotificationDestination,
+  useNotificationDestinationStore,
+} from "@/data/notification-destination-store";
 import { i18n, useT } from "@/lib/i18n";
 import { mapAuthError } from "@/lib/auth-error";
 
 export default function Login() {
   const { t } = useT("auth");
   const sendCode = useAuthStore((s) => s.sendCode);
+  const pendingDestination = useNotificationDestinationStore(
+    (state) => state.pending,
+  );
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +42,10 @@ export default function Login() {
     }
   };
 
+  const onCancelNotificationResume = async () => {
+    await cancelPendingNotificationDestination();
+  };
+
   return (
     <SafeAreaView className="flex-1 bg-background">
       <KeyboardAvoidingView
@@ -51,6 +62,11 @@ export default function Login() {
               <Text className="text-sm text-muted-foreground text-center">
                 {t("login.subtitle")}
               </Text>
+              {pendingDestination ? (
+                <Text className="text-sm text-foreground text-center mt-2">
+                  {t("login.notification_resume")}
+                </Text>
+              ) : null}
             </View>
           </View>
 
@@ -80,6 +96,11 @@ export default function Login() {
           >
             <Text>{submitting ? t("login.sending") : t("login.send_code")}</Text>
           </Button>
+          {pendingDestination ? (
+            <Button variant="outline" onPress={onCancelNotificationResume}>
+              <Text>{t("login.cancel_notification_resume")}</Text>
+            </Button>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

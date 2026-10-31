@@ -88,5 +88,26 @@
   "type.task_completed": "运行完成",
   "type.task_failed": "运行失败",
   "type.run_limit_blocked": "已达到上限，本次运行被阻止",
-  "body.autopilot_title_limit": "自动化 \"{{title}}\" 未启动，因为该工作区已达到当前周期 {{limit}} 次运行的上限。额度将在 {{resetAt}} 重置。"
+  "body.autopilot_title_limit": "自动化 \"{{title}}\" 未启动，因为该工作区已达到当前周期 {{limit}} 次运行的上限。额度将在 {{resetAt}} 重置。",
+  "notification_recovery": {
+    "this_workspace": "此工作区",
+    "open_inbox": "打开 {{workspace}} 收件箱",
+    "choose_workspace": "选择其他工作区",
+    "workspace_unavailable": {
+      "title": "你已无权访问此工作区",
+      "body": "请选择其他工作区以继续。"
+    },
+    "issue_unavailable": {
+      "title": "此问题已不可用",
+      "body": "该问题可能已被删除，或你已无权访问。{{workspace}} 的其他通知仍在收件箱中。"
+    },
+    "offline": {
+      "title": "连接网络以加载此问题",
+      "body": "通知目标已保存。联网后重试，或打开工作区收件箱。"
+    },
+    "temporary_error": {
+      "title": "目前无法打开此通知",
+      "body": "通知目标已保存。请重试，或继续前往工作区收件箱。"
+    }
+  }
 }

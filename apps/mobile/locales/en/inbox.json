@@ -80,5 +80,26 @@
   "body": {
     "autopilot_title_limit": "Autopilot \"{{title}}\" was not started because this workspace has reached its limit of {{limit}} runs for the current period. The allowance resets {{resetAt}}.",
     "autopilot_limit": "This workspace has reached its limit of {{limit}} autopilot runs for the current period. This execution was not started. The allowance resets {{resetAt}}."
+  },
+  "notification_recovery": {
+    "this_workspace": "this workspace",
+    "open_inbox": "Open {{workspace}} inbox",
+    "choose_workspace": "Choose another workspace",
+    "workspace_unavailable": {
+      "title": "You no longer have access to this workspace",
+      "body": "Choose another workspace to continue."
+    },
+    "issue_unavailable": {
+      "title": "This issue is no longer available",
+      "body": "It may have been deleted, or you may no longer have access. Your other {{workspace}} notifications are still in the inbox."
+    },
+    "offline": {
+      "title": "Connect to load this issue",
+      "body": "The notification destination is saved. Retry when you're online, or open the workspace inbox."
+    },
+    "temporary_error": {
+      "title": "Can't open this notification right now",
+      "body": "The notification destination is saved. Retry, or continue in the workspace inbox."
+    }
   }
 }

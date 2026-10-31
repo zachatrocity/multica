@@ -65,7 +65,9 @@
     "open_on_web": "在網頁開啟",
     "delete_comment": "刪除評論",
     "edit_comment": "編輯評論",
-    "no_runs": "暫無執行"
+    "no_runs": "暫無執行",
+    "notification_comment_unavailable": "該評論已無法使用。",
+    "notification_offline": "你正在離線查看已儲存的問題內容。"
   },
   "new": {
     "title": "新建任務",

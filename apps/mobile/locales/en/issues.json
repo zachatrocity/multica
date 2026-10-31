@@ -65,7 +65,9 @@
     "open_on_web": "Open on web",
     "delete_comment": "Delete comment",
     "edit_comment": "Edit comment",
-    "no_runs": "No runs yet"
+    "no_runs": "No runs yet",
+    "notification_comment_unavailable": "That comment is no longer available.",
+    "notification_offline": "You're viewing saved issue content while offline."
   },
   "new": {
     "title": "New issue",
