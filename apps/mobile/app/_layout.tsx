@@ -13,6 +13,7 @@ import { api } from "@/data/api";
 import { maybeRenewSession } from "@/data/session-renewal";
 import { queryClient } from "@/data/query-client";
 import { NotificationDestinationResolver } from "@/data/use-notification-destination-resolver";
+import { AndroidAlertLifecycle } from "@/data/android-alert-lifecycle";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { SessionActivityBoundary } from "@/components/auth/session-activity-boundary";
@@ -87,6 +88,7 @@ export default function RootLayout() {
               <ThemeProvider value={NAV_THEME[colorScheme]}>
                 <AuthInitializer>
                   <NotificationDestinationResolver />
+                  <AndroidAlertLifecycle />
                   <SessionActivityBoundary>
                     <LightboxProvider>
                       <StatusBar style={isDarkColorScheme ? "light" : "dark"} />

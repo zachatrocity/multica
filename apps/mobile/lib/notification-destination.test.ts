@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeNotificationDestination,
   notificationDestinationKey,
+  notificationEventTypes,
 } from "./notification-destination";
 
 const payload = {
@@ -26,6 +27,15 @@ describe("decodeNotificationDestination", () => {
       );
     }
   });
+
+  it.each(notificationEventTypes)(
+    "accepts the reviewed %s event destination",
+    (eventType) => {
+      expect(
+        decodeNotificationDestination({ ...payload, event_type: eventType }).kind,
+      ).toBe("issue");
+    },
+  );
 
   it.each([
     ["url", "https://attacker.example/steal"],

@@ -10,6 +10,7 @@
     "pinned": "已固定",
     "issues": "任務",
     "projects": "專案",
+    "settings": "設定",
     "account_settings": "帳號設定"
   },
   "routes": {
@@ -17,6 +18,7 @@
     "projects": "專案",
     "settings": "設定",
     "profile": "個人資料",
+    "android_alert_setup": "Android 提醒",
     "notifications": "通知",
     "search": "搜尋",
     "issue": "任務",

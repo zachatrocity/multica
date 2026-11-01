@@ -1,0 +1,19 @@
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'ai.multica.mobile.alerts'
+version = '0.1.0'
+
+android {
+  namespace 'ai.multica.mobile.alerts'
+
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+dependencies {
+  implementation 'androidx.core:core-ktx:1.17.0'
+  implementation 'org.unifiedpush.android:connector:3.3.5'
+}

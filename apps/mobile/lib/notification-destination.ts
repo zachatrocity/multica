@@ -15,6 +15,10 @@ export const notificationEventTypes = [
   "review_requested",
   "task_failed",
   "agent_blocked",
+  "children_done",
+  "reaction_added",
+  "task_completed",
+  "agent_completed",
 ] as const;
 
 const uuid = z.string().uuid();

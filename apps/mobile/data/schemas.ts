@@ -129,6 +129,60 @@ export const EMPTY_NOTIFICATION_PREFERENCES = {
   preferences: {},
 } as const;
 
+export const AndroidPushEndpointSchema = z.object({
+  id: z.string(),
+  device_id: z.string(),
+  app_variant: z.string().default("development"),
+  status: z.enum(["active", "disabled", "quarantined"]).catch("disabled"),
+  failure_count: z.number().int().nonnegative().default(0),
+  last_success_at: z.string().nullable().default(null),
+  last_failure_at: z.string().nullable().default(null),
+  expires_at: z.string().default(""),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).strip();
+export const AndroidPushEndpointListSchema = z.array(AndroidPushEndpointSchema).default([]);
+export type AndroidPushEndpoint = z.infer<typeof AndroidPushEndpointSchema>;
+export const EMPTY_ANDROID_PUSH_ENDPOINT: AndroidPushEndpoint = {
+  id: "",
+  device_id: "",
+  app_variant: "development",
+  status: "disabled",
+  failure_count: 0,
+  last_success_at: null,
+  last_failure_at: null,
+  expires_at: "",
+  created_at: "",
+  updated_at: "",
+};
+export const EMPTY_ANDROID_PUSH_ENDPOINTS: AndroidPushEndpoint[] = [];
+
+export const AndroidPushPreferenceSchema = z.object({
+  workspace_id: z.string().default(""),
+  enabled: z.boolean().catch(false),
+  mentions: z.boolean().catch(true),
+  assignments: z.boolean().catch(true),
+  review_blockers: z.boolean().catch(true),
+  comments: z.boolean().catch(false),
+  routine_updates: z.boolean().catch(false),
+}).loose();
+export type AndroidPushPreference = z.infer<typeof AndroidPushPreferenceSchema>;
+export const EMPTY_ANDROID_PUSH_PREFERENCE: AndroidPushPreference = {
+  workspace_id: "",
+  enabled: false,
+  mentions: true,
+  assignments: true,
+  review_blockers: true,
+  comments: false,
+  routine_updates: false,
+};
+
+export const AndroidPushTestResultSchema = z.object({
+  event_id: z.string(),
+  status: z.string().default(""),
+}).loose();
+export type AndroidPushTestResult = z.infer<typeof AndroidPushTestResultSchema>;
+
 const LabelSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),

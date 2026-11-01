@@ -351,6 +351,13 @@ export default function WorkspaceLayout() {
             }}
         />
         <Stack.Screen
+          name="more/settings/notifications/connect"
+          options={{
+            title: t("navigation:routes.android_alert_setup"),
+            headerBackTitle: t("navigation:routes.notifications"),
+          }}
+        />
+        <Stack.Screen
           name="new-issue"
           options={{
             title: t("navigation:routes.new_issue"),

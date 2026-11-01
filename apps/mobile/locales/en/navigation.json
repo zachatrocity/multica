@@ -10,6 +10,7 @@
     "pinned": "Pinned",
     "issues": "Issues",
     "projects": "Projects",
+    "settings": "Settings",
     "account_settings": "Account settings"
   },
   "routes": {
@@ -17,6 +18,7 @@
     "projects": "Projects",
     "settings": "Settings",
     "profile": "Profile",
+    "android_alert_setup": "Android alerts",
     "notifications": "Notifications",
     "search": "Search",
     "issue": "Issue",

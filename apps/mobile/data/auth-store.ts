@@ -15,6 +15,7 @@ import { api, ApiError } from "./api";
 import { clearToken, getToken, setToken } from "./secure-storage";
 import { invalidateSessionEpoch } from "./session-epoch";
 import { useWorkspaceStore } from "./workspace-store";
+import { disconnectAndroidAlertTransport } from "./android-alerts";
 
 interface AuthState {
   user: User | null;
@@ -83,6 +84,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     // below is async, so until it lands a concurrent read still returns the
     // token being removed — the epoch is what makes this instant.
     invalidateSessionEpoch();
+    await disconnectAndroidAlertTransport();
     await clearToken();
     api.setToken(null);
     set({ user: null });

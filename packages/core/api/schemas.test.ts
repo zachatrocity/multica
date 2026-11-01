@@ -1271,6 +1271,19 @@ describe("AppConfigSchema comment_delete_keep_replies_supported drift", () => {
   });
 });
 
+describe("AppConfigSchema android_push_available drift", () => {
+  it.each([
+    [undefined, false],
+    ["yes", false],
+    [true, true],
+  ])("%j parses as %s", (value, expected) => {
+    const parsed = AppConfigSchema.parse({
+      android_push_available: value,
+    });
+    expect(parsed.android_push_available).toBe(expected);
+  });
+});
+
 describe("AppConfigSchema local_worktree_supported drift", () => {
   it("defaults to false when the server predates the signal", () => {
     const parsed = AppConfigSchema.parse({ cdn_domain: "cdn.example.com" });

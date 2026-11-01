@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -95,6 +96,11 @@ type Notification struct {
 	InboxItemID *string
 	EventType   string
 	Category    Category
+	ActorType   string
+	ActorID     string
+	Title       string
+	Body        string
+	Details     []byte
 }
 
 func timestampPtr(value pgtype.Timestamptz) *time.Time {
@@ -342,12 +348,18 @@ func (s *Service) Enqueue(ctx context.Context, notification Notification) (bool,
 	if notification.InboxItemID != nil {
 		inboxItemID = *notification.InboxItemID
 	}
+	details := notification.Details
+	if len(details) == 0 || !json.Valid(details) {
+		details = []byte("{}")
+	}
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO android_push_delivery (
-			endpoint_id, inbox_item_id, event_id, workspace_id, issue_id, comment_id, event_type
+			endpoint_id, inbox_item_id, event_id, workspace_id, issue_id, comment_id, event_type,
+			actor_type, actor_id, event_category, event_title, event_body, event_details
 		)
 		SELECT e.id, NULLIF($4, '')::uuid, $1::uuid, $2::uuid,
-			NULLIF($5, '')::uuid, NULLIF($6, '')::uuid, $7
+			NULLIF($5, '')::uuid, NULLIF($6, '')::uuid, $7,
+			NULLIF($9, ''), NULLIF($10, '')::uuid, $8, $11, $12, $13::jsonb
 		FROM android_push_endpoint e
 		JOIN android_push_preference p
 			ON p.workspace_id = $2::uuid AND p.user_id = e.user_id
@@ -368,7 +380,8 @@ func (s *Service) Enqueue(ctx context.Context, notification Notification) (bool,
 			)
 		ON CONFLICT (endpoint_id, event_id) DO NOTHING`,
 		notification.EventID, notification.WorkspaceID, notification.UserID, inboxItemID,
-		notification.IssueID, notification.CommentID, notification.EventType, notification.Category)
+		notification.IssueID, notification.CommentID, notification.EventType, notification.Category,
+		notification.ActorType, notification.ActorID, notification.Title, notification.Body, details)
 	if err != nil {
 		return false, err
 	}
@@ -431,12 +444,29 @@ func (s *Service) runBatch(ctx context.Context) {
 func (s *Service) enqueueInboxDeliveries(ctx context.Context, limit int) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO android_push_delivery (
-			endpoint_id, inbox_item_id, event_id, workspace_id, issue_id, comment_id, event_type
+			endpoint_id, inbox_item_id, event_id, workspace_id, issue_id, comment_id, event_type,
+			actor_type, actor_id, event_category, event_title, event_body, event_details
 		)
 		SELECT e.id, i.id, i.id, i.workspace_id, i.issue_id,
 			CASE WHEN COALESCE(i.details->>'comment_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
 				THEN (i.details->>'comment_id')::uuid END,
-			i.type
+			i.type, i.actor_type, i.actor_id,
+			CASE
+				WHEN i.type = 'mentioned' THEN 'mentions'
+				WHEN i.type IN ('issue_assigned', 'unassigned', 'assignee_changed') THEN 'assignments'
+				WHEN i.type IN ('task_failed', 'agent_blocked', 'children_done') THEN 'review_blockers'
+				WHEN i.type = 'status_changed' AND (
+					(i.details->>'to') IN ('in_review', 'blocked', 'done', 'cancelled')
+					OR EXISTS (
+						SELECT 1 FROM issue_status s
+						WHERE s.workspace_id = i.workspace_id AND s.key = i.details->>'to'
+						AND (s.category IN ('done', 'closed') OR (s.category = 'started' AND s.key <> 'in_progress'))
+					)
+				) THEN 'review_blockers'
+				WHEN i.type = 'new_comment' THEN 'comments'
+				ELSE 'routine_updates'
+			END,
+			i.title, COALESCE(i.body, ''), i.details
 		FROM inbox_item i
 		JOIN android_push_endpoint e
 			ON e.user_id = i.recipient_id AND i.recipient_type = 'member'
@@ -484,14 +514,22 @@ type claimedDelivery struct {
 	CommentID         *string
 	InboxItemID       *string
 	EventType         string
+	ActorType         string
+	ActorID           *string
+	EventCategory     string
+	EventTitle        string
+	EventBody         string
+	EventDetails      []byte
 	Attempts          int32
 }
 
 func scanClaim(row pgx.Row) (claimedDelivery, error) {
 	var delivery claimedDelivery
-	var issueID, commentID, inboxItemID pgtype.UUID
+	var issueID, commentID, inboxItemID, actorID pgtype.UUID
 	err := row.Scan(&delivery.ID, &delivery.EndpointID, &delivery.EndpointEncrypted, &delivery.EventID,
-		&delivery.WorkspaceID, &issueID, &commentID, &inboxItemID, &delivery.EventType, &delivery.Attempts)
+		&delivery.WorkspaceID, &issueID, &commentID, &inboxItemID, &delivery.EventType,
+		&delivery.ActorType, &actorID, &delivery.EventCategory, &delivery.EventTitle,
+		&delivery.EventBody, &delivery.EventDetails, &delivery.Attempts)
 	if issueID.Valid {
 		value := uuid.UUID(issueID.Bytes).String()
 		delivery.IssueID = &value
@@ -503,6 +541,10 @@ func scanClaim(row pgx.Row) (claimedDelivery, error) {
 	if inboxItemID.Valid {
 		value := uuid.UUID(inboxItemID.Bytes).String()
 		delivery.InboxItemID = &value
+	}
+	if actorID.Valid {
+		value := uuid.UUID(actorID.Bytes).String()
+		delivery.ActorID = &value
 	}
 	return delivery, err
 }
@@ -535,7 +577,9 @@ func (s *Service) claimOne(ctx context.Context, deliveryID string) (claimedDeliv
 		FROM candidate c, android_push_endpoint e
 		WHERE d.id = c.id AND e.id = d.endpoint_id
 		RETURNING d.id::text, d.endpoint_id::text, e.endpoint_encrypted, d.event_id::text,
-			d.workspace_id::text, d.issue_id, d.comment_id, d.inbox_item_id, d.event_type, d.attempts`
+			d.workspace_id::text, d.issue_id, d.comment_id, d.inbox_item_id, d.event_type,
+			COALESCE(d.actor_type, ''), d.actor_id, d.event_category, d.event_title,
+			d.event_body, d.event_details, d.attempts`
 	delivery, err := scanClaim(tx.QueryRow(ctx, query, args...))
 	if err != nil {
 		return claimedDelivery{}, err
@@ -547,13 +591,194 @@ func (s *Service) claimOne(ctx context.Context, deliveryID string) (claimedDeliv
 }
 
 type payload struct {
-	Version     int     `json:"version"`
-	EventID     string  `json:"event_id"`
-	EventType   string  `json:"event_type"`
-	WorkspaceID string  `json:"workspace_id"`
-	IssueID     *string `json:"issue_id,omitempty"`
-	CommentID   *string `json:"comment_id,omitempty"`
-	InboxItemID *string `json:"inbox_item_id,omitempty"`
+	Version       int     `json:"version"`
+	EventID       string  `json:"event_id"`
+	EventType     string  `json:"event_type"`
+	WorkspaceID   string  `json:"workspace_id"`
+	WorkspaceSlug string  `json:"workspace_slug"`
+	WorkspaceName string  `json:"workspace_name"`
+	IssueID       *string `json:"issue_id,omitempty"`
+	CommentID     *string `json:"comment_id,omitempty"`
+	InboxItemID   *string `json:"inbox_item_id,omitempty"`
+	Title         string  `json:"title"`
+	Body          string  `json:"body"`
+	ExpandedBody  string  `json:"expanded_body,omitempty"`
+	Channel       string  `json:"channel"`
+}
+
+var markdownLinkPattern = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+
+var markdownMarkerReplacer = strings.NewReplacer(
+	"**", "",
+	"__", "",
+	"~~", "",
+	"`", "",
+	"#", "",
+	">", "",
+)
+
+type notificationContext struct {
+	WorkspaceSlug string
+	WorkspaceName string
+	IssueRef      string
+	IssueTitle    string
+	ActorName     string
+}
+
+type notificationCopy struct {
+	Title        string
+	Body         string
+	ExpandedBody string
+	Channel      string
+}
+
+func plainText(value string, limit int) string {
+	value = markdownLinkPattern.ReplaceAllString(value, "$1")
+	value = markdownMarkerReplacer.Replace(value)
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit-1])) + "…"
+}
+
+func notificationDisplay(delivery claimedDelivery, info notificationContext) notificationCopy {
+	issueTitle := plainText(info.IssueTitle, 120)
+	workspaceName := plainText(info.WorkspaceName, 80)
+	actorName := plainText(info.ActorName, 60)
+	excerpt := plainText(delivery.EventBody, 180)
+	issueRef := info.IssueRef
+	if issueRef == "" {
+		issueRef = "Issue"
+	}
+	issueSummary := issueRef
+	if issueTitle != "" {
+		issueSummary += " · " + issueTitle
+	}
+	withWorkspace := issueSummary
+	if workspaceName != "" {
+		withWorkspace += " · " + workspaceName
+	}
+	titleWithWorkspace := issueTitle
+	if titleWithWorkspace == "" {
+		titleWithWorkspace = issueRef
+	}
+	if workspaceName != "" {
+		titleWithWorkspace += " · " + workspaceName
+	}
+	expanded := withWorkspace
+	if excerpt != "" && excerpt != issueTitle {
+		expanded += "\n“" + excerpt + "”"
+	}
+	channel := "activity"
+	if delivery.EventCategory == string(CategoryMentions) ||
+		delivery.EventCategory == string(CategoryAssignments) ||
+		delivery.EventCategory == string(CategoryReviewBlockers) ||
+		delivery.EventType == "test" {
+		channel = "action_needed"
+	}
+
+	switch delivery.EventType {
+	case "test":
+		return notificationCopy{
+			Title:        "Multica alerts are working",
+			Body:         "Tap to open notification settings.",
+			ExpandedBody: "This device can receive private Multica alerts through ntfy.",
+			Channel:      channel,
+		}
+	case "mentioned":
+		title := "You were mentioned"
+		if actorName != "" {
+			title = actorName + " mentioned you"
+		}
+		return notificationCopy{Title: title, Body: issueSummary, ExpandedBody: expanded, Channel: channel}
+	case "issue_assigned":
+		return notificationCopy{Title: issueRef + " assigned to you", Body: titleWithWorkspace, ExpandedBody: expanded, Channel: channel}
+	case "unassigned", "assignee_changed":
+		return notificationCopy{Title: "Assignment changed · " + issueRef, Body: withWorkspace, ExpandedBody: expanded, Channel: channel}
+	case "new_comment":
+		title := "New comment"
+		if actorName != "" {
+			title = actorName + " commented"
+		}
+		return notificationCopy{Title: title, Body: issueSummary, ExpandedBody: expanded, Channel: channel}
+	case "task_failed", "agent_blocked":
+		return notificationCopy{Title: "Agent needs attention · " + issueRef, Body: withWorkspace, ExpandedBody: expanded, Channel: channel}
+	case "children_done", "review_requested":
+		return notificationCopy{Title: "Review needed · " + issueRef, Body: withWorkspace, ExpandedBody: expanded, Channel: channel}
+	case "status_changed":
+		var detail struct {
+			To string `json:"to"`
+		}
+		_ = json.Unmarshal(delivery.EventDetails, &detail)
+		switch detail.To {
+		case "in_review", "done":
+			return notificationCopy{Title: "Review needed · " + issueRef, Body: withWorkspace, ExpandedBody: expanded, Channel: channel}
+		case "blocked", "cancelled":
+			return notificationCopy{Title: "Issue needs attention · " + issueRef, Body: withWorkspace, ExpandedBody: expanded, Channel: channel}
+		default:
+			status := plainText(strings.ReplaceAll(detail.To, "_", " "), 40)
+			title := issueRef + " updated"
+			if status != "" {
+				title = issueRef + " moved to " + status
+			}
+			return notificationCopy{Title: title, Body: withWorkspace, ExpandedBody: expanded, Channel: channel}
+		}
+	default:
+		return notificationCopy{Title: issueRef + " updated", Body: withWorkspace, ExpandedBody: expanded, Channel: channel}
+	}
+}
+
+func (s *Service) buildPayload(ctx context.Context, delivery claimedDelivery) (payload, error) {
+	issueID := ""
+	if delivery.IssueID != nil {
+		issueID = *delivery.IssueID
+	}
+	actorID := ""
+	if delivery.ActorID != nil {
+		actorID = *delivery.ActorID
+	}
+	var info notificationContext
+	var issuePrefix string
+	var issueNumber int32
+	err := s.pool.QueryRow(ctx, `
+		SELECT w.slug, w.name, w.issue_prefix,
+			COALESCE(i.number, 0), COALESCE(i.title, $5),
+			COALESCE(u.name, a.name, '')
+		FROM workspace w
+		LEFT JOIN issue i ON i.id = NULLIF($2, '')::uuid AND i.workspace_id = w.id
+		LEFT JOIN "user" u ON $3 = 'member' AND u.id = NULLIF($4, '')::uuid
+			AND EXISTS (SELECT 1 FROM member m WHERE m.workspace_id = w.id AND m.user_id = u.id)
+		LEFT JOIN agent a ON $3 = 'agent' AND a.id = NULLIF($4, '')::uuid AND a.workspace_id = w.id
+		WHERE w.id = $1::uuid`,
+		delivery.WorkspaceID, issueID, delivery.ActorType, actorID, delivery.EventTitle,
+	).Scan(&info.WorkspaceSlug, &info.WorkspaceName, &issuePrefix, &issueNumber, &info.IssueTitle, &info.ActorName)
+	if err != nil {
+		return payload{}, err
+	}
+	if issueNumber > 0 {
+		info.IssueRef = fmt.Sprintf("%s-%d", issuePrefix, issueNumber)
+	}
+	copy := notificationDisplay(delivery, info)
+	return payload{
+		Version:       1,
+		EventID:       delivery.EventID,
+		EventType:     delivery.EventType,
+		WorkspaceID:   delivery.WorkspaceID,
+		WorkspaceSlug: info.WorkspaceSlug,
+		WorkspaceName: info.WorkspaceName,
+		IssueID:       delivery.IssueID,
+		CommentID:     delivery.CommentID,
+		InboxItemID:   delivery.InboxItemID,
+		Title:         copy.Title,
+		Body:          copy.Body,
+		ExpandedBody:  copy.ExpandedBody,
+		Channel:       copy.Channel,
+	}, nil
 }
 
 type deliveryOutcome struct {
@@ -582,11 +807,11 @@ func (s *Service) processOne(ctx context.Context, deliveryID string) (bool, stri
 		outcome := deliveryOutcome{Status: "failed", Code: "endpoint_invalid", Quarantine: true}
 		return true, outcome.Status, s.finishDelivery(ctx, delivery, outcome)
 	}
-	body, err := json.Marshal(payload{
-		Version: 1, EventID: delivery.EventID, EventType: delivery.EventType,
-		WorkspaceID: delivery.WorkspaceID, IssueID: delivery.IssueID,
-		CommentID: delivery.CommentID, InboxItemID: delivery.InboxItemID,
-	})
+	notificationPayload, err := s.buildPayload(ctx, delivery)
+	if err != nil {
+		return true, "", err
+	}
+	body, err := json.Marshal(notificationPayload)
 	if err != nil {
 		return true, "", err
 	}
