@@ -620,9 +620,9 @@ VALUES ($1, $2, 'member')
 	var androidEndpointID string
 	dbfx.QueryRow(t, `
 INSERT INTO android_push_endpoint (
-	user_id, device_id, endpoint_encrypted, endpoint_hash, app_variant
+	user_id, device_id, endpoint_encrypted, endpoint_hash, app_variant, status
 )
-VALUES ($1, 'workspace-delete-shared-device', '\x01'::bytea, '\x02'::bytea, 'test')
+VALUES ($1, 'workspace-delete-shared-device', '\x01'::bytea, '\x02'::bytea, 'test', 'disabled')
 RETURNING id
 `, testUserID).Scan(&androidEndpointID)
 	t.Cleanup(func() {

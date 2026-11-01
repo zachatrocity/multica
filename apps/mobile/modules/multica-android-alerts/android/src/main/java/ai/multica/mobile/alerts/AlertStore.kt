@@ -10,11 +10,13 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import org.json.JSONObject
 
 internal object AlertStore {
   private const val PREFS = "multica_android_alerts"
   private const val KEY_ALIAS = "multica_android_alert_endpoint"
-  private const val ENDPOINT = "endpoint_ciphertext"
+  private const val REGISTRATION = "registration_ciphertext"
+  private const val LEGACY_ENDPOINT = "endpoint_ciphertext"
   private const val DEVICE_ID = "device_id"
   private const val DISTRIBUTOR = "distributor"
   private const val STATUS = "registration_status"
@@ -54,22 +56,37 @@ internal object AlertStore {
       .apply()
   }
 
-  fun saveEndpoint(context: Context, endpoint: String) {
+  fun saveRegistration(context: Context, registration: AlertRegistration) {
+    val plaintext = JSONObject()
+      .put("endpoint", registration.endpoint)
+      .put("p256dh", registration.p256dh)
+      .put("auth", registration.auth)
+      .toString()
+      .toByteArray(Charsets.UTF_8)
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
     cipher.init(Cipher.ENCRYPT_MODE, endpointKey())
-    val encrypted = cipher.doFinal(endpoint.toByteArray(Charsets.UTF_8))
+    val encrypted = cipher.doFinal(plaintext)
     val combined = ByteArray(cipher.iv.size + encrypted.size)
     cipher.iv.copyInto(combined)
     encrypted.copyInto(combined, cipher.iv.size)
     prefs(context).edit()
-      .putString(ENDPOINT, Base64.encodeToString(combined, Base64.NO_WRAP))
+      .putString(REGISTRATION, Base64.encodeToString(combined, Base64.NO_WRAP))
+      .remove(LEGACY_ENDPOINT)
       .putString(STATUS, "registered")
       .remove(FAILURE)
       .apply()
   }
 
-  fun endpoint(context: Context): String? {
-    val encoded = prefs(context).getString(ENDPOINT, null) ?: return null
+  fun registration(context: Context): AlertRegistration? {
+    val preferences = prefs(context)
+    val encoded = preferences.getString(REGISTRATION, null)
+    if (encoded == null) {
+      if (preferences.contains(LEGACY_ENDPOINT)) {
+        preferences.edit().remove(LEGACY_ENDPOINT).apply()
+        setRegistrationStatus(context, "registering")
+      }
+      return null
+    }
     return try {
       val combined = Base64.decode(encoded, Base64.NO_WRAP)
       if (combined.size <= IV_BYTES) return null
@@ -79,21 +96,33 @@ internal object AlertStore {
         endpointKey(),
         GCMParameterSpec(128, combined.copyOfRange(0, IV_BYTES)),
       )
-      String(cipher.doFinal(combined.copyOfRange(IV_BYTES, combined.size)), Charsets.UTF_8)
+      val value = JSONObject(
+        String(cipher.doFinal(combined.copyOfRange(IV_BYTES, combined.size)), Charsets.UTF_8),
+      )
+      AlertRegistration(
+        endpoint = value.getString("endpoint"),
+        p256dh = value.getString("p256dh"),
+        auth = value.getString("auth"),
+      ).takeIf { it.endpoint.isNotBlank() && it.p256dh.isNotBlank() && it.auth.isNotBlank() }
+        ?: throw IllegalStateException("incomplete registration")
     } catch (_: Exception) {
-      clearEndpoint(context)
+      clearRegistrationMaterial(context)
       setRegistrationStatus(context, "failed", "endpoint_storage_unavailable")
       null
     }
   }
 
-  fun clearEndpoint(context: Context) {
-    prefs(context).edit().remove(ENDPOINT).apply()
+  fun clearRegistrationMaterial(context: Context) {
+    prefs(context).edit()
+      .remove(REGISTRATION)
+      .remove(LEGACY_ENDPOINT)
+      .apply()
   }
 
   fun clearRegistration(context: Context) {
     prefs(context).edit()
-      .remove(ENDPOINT)
+      .remove(REGISTRATION)
+      .remove(LEGACY_ENDPOINT)
       .remove(DISTRIBUTOR)
       .putString(STATUS, "disconnected")
       .remove(FAILURE)
@@ -144,4 +173,10 @@ internal object AlertStore {
     )
     return generator.generateKey()
   }
+
+internal data class AlertRegistration(
+  val endpoint: String,
+  val p256dh: String,
+  val auth: String,
+)
 }

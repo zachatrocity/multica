@@ -228,6 +228,8 @@ type AndroidPushEndpoint struct {
 	DisabledAt        pgtype.Timestamptz `json:"disabled_at"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	P256dhEncrypted   []byte             `json:"p256dh_encrypted"`
+	AuthEncrypted     []byte             `json:"auth_encrypted"`
 }
 
 type AndroidPushPreference struct {

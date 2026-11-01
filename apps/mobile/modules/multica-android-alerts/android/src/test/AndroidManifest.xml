@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <receiver
+      android:name="ai.multica.mobile.alerts.TestManifestMessagingReceiver"
+      android:exported="true">
+      <intent-filter android:priority="0">
+        <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

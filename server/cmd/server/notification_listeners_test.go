@@ -3,16 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
-	"io"
-	"log/slog"
-	"testing"
-
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"github.com/multica-ai/multica/server/internal/androidpush"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"io"
+	"log/slog"
+	"testing"
 )
 
 // notificationTest helpers — reuse the integration test fixtures from TestMain
@@ -407,7 +409,19 @@ func TestAndroidPushCommentPreferenceIsIndependentFromInboxMute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := push.RegisterEndpoint(context.Background(), recipientID, "android-independent", "https://ntfy.example.test/topic", "test")
+	privateKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authSecret := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, authSecret); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := push.RegisterEndpoint(context.Background(), recipientID, androidpush.Registration{
+		DeviceID: "android-independent", Endpoint: "https://ntfy.example.test/topic",
+		P256DH: base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes()),
+		Auth:   base64.RawURLEncoding.EncodeToString(authSecret), AppVariant: "test",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

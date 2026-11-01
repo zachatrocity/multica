@@ -64,11 +64,11 @@ jobs:
         working-directory: apps/mobile
         run: CI=1 pnpm exec dotenv -e .env.production.local -- cross-env APP_ENV=production expo prebuild --platform android --no-install --clean
 
-      - name: Build release APK
+      - name: Test and build release APK
         working-directory: apps/mobile/android
         run: |
           ./gradlew :app:dependencyInsight --dependency com.facebook.fbjni:fbjni --configuration releaseRuntimeClasspath
-          ./gradlew assembleRelease
+          ./gradlew :multica-android-alerts:testReleaseUnitTest assembleRelease
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4

@@ -153,7 +153,7 @@ services:
       # "127.0.0.1/32" when running behind a same-host reverse proxy.
       MULTICA_TRUSTED_PROXIES: ${MULTICA_TRUSTED_PROXIES:-}
       # ntfy UnifiedPush publisher. Token required unless explicitly opted out.
-      # Endpoint material is encrypted with the secret key before DB storage.
+      # Subscription URLs and Web Push keys are encrypted before DB storage.
       MULTICA_NTFY_BASE_URL: ${MULTICA_NTFY_BASE_URL:-}
       MULTICA_NTFY_ALLOW_UNAUTHENTICATED: ${MULTICA_NTFY_ALLOW_UNAUTHENTICATED:-false}
       MULTICA_NTFY_ACCESS_TOKEN: ${MULTICA_NTFY_ACCESS_TOKEN:-}

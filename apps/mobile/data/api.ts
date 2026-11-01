@@ -465,6 +465,8 @@ class ApiClient {
   async registerAndroidPushEndpoint(data: {
     device_id: string;
     endpoint: string;
+    p256dh: string;
+    auth: string;
     app_variant: string;
   }): Promise<AndroidPushEndpoint> {
     return this.fetchValidatedWith(

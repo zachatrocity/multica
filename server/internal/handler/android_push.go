@@ -23,6 +23,8 @@ func (h *Handler) requireAndroidPush(w http.ResponseWriter) (*androidpush.Servic
 type registerAndroidPushEndpointRequest struct {
 	DeviceID   string `json:"device_id"`
 	Endpoint   string `json:"endpoint"`
+	P256DH     string `json:"p256dh"`
+	Auth       string `json:"auth"`
 	AppVariant string `json:"app_variant"`
 }
 
@@ -40,9 +42,14 @@ func (h *Handler) RegisterAndroidPushEndpoint(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	endpoint, err := service.RegisterEndpoint(r.Context(), userID, request.DeviceID, request.Endpoint, request.AppVariant)
+	endpoint, err := service.RegisterEndpoint(r.Context(), userID, androidpush.Registration{
+		DeviceID: request.DeviceID, Endpoint: request.Endpoint, P256DH: request.P256DH,
+		Auth: request.Auth, AppVariant: request.AppVariant,
+	})
 	if err != nil {
-		if strings.Contains(err.Error(), "endpoint") || strings.Contains(err.Error(), "device_id") || strings.Contains(err.Error(), "app_variant") {
+		if strings.Contains(err.Error(), "endpoint") || strings.Contains(err.Error(), "device_id") ||
+			strings.Contains(err.Error(), "app_variant") || strings.Contains(err.Error(), "web push") ||
+			strings.Contains(err.Error(), "p256dh") || strings.Contains(err.Error(), "auth key") {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -96,6 +103,10 @@ func (h *Handler) UpdateAndroidPushEndpoint(w http.ResponseWriter, r *http.Reque
 	endpoint, err := service.SetEndpointEnabled(r.Context(), userID, uuidToString(endpointID), *request.Enabled)
 	if errors.Is(err, androidpush.ErrEndpointNotFound) {
 		writeError(w, http.StatusNotFound, "Android alert connection not found")
+		return
+	}
+	if errors.Is(err, androidpush.ErrEndpointEncryptionRequired) {
+		writeError(w, http.StatusConflict, "Android alert connection must be reconnected")
 		return
 	}
 	if err != nil {
