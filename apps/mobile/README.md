@@ -97,6 +97,11 @@ For native validation, test a Release cold launch to sign-in, cold and warm
 in each variant. Also open the image picker from profile, chat, and the issue
 editor, select an image, and confirm the upload completes. From the issue editor,
 also attach a document and confirm its picker dismisses and the upload completes.
+On Android, open an issue's overflow menu, exercise each available action,
+repeat open/outside-dismiss cycles, and background/foreground the app while the
+menu is open. Confirm that exactly one menu opens after returning, then smoke
+another overflow menu such as Inbox actions.
+
 Unit tests do not replace this device validation.
 
 ### Android cold-start recovery

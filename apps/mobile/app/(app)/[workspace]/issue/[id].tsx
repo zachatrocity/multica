@@ -12,7 +12,6 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
@@ -25,10 +24,10 @@ import * as Clipboard from "expo-clipboard";
 import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { IconButton } from "@/components/ui/icon-button";
 import { TimelineList } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
+import { IssueActionsMenu } from "@/components/issue/issue-actions-menu";
 import {
   issueDetailOptions,
   issueKeys,
@@ -130,68 +129,11 @@ export default function IssueDetail() {
   const deletePin = useDeletePin();
   const { t } = useT("issues");
 
-  // Three-dot menu: Pin/Unpin / Copy link / Open on web (if web URL set) /
-  // Delete. Mirrors apps/mobile/app/(app)/[workspace]/project/[id].tsx — same
-  // ActionSheetIOS + Alert.alert confirm pattern. Property edits (status,
-  // priority, assignee, due_date) live on the IssueHeaderCard chips inside
-  // the timeline list, not in this menu — one entry per action.
-  const onPressMore = useCallback(() => {
-    if (!issue || !wsSlug) return;
-    const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
-    const issueLink = webUrl
+  const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
+  const issueLink =
+    issue && wsSlug && webUrl
       ? `${webUrl}/${wsSlug}/issue/${issue.identifier}`
       : null;
-    const actions = ["cancel", "pin"];
-    if (isPinned) actions[1] = "unpin";
-    actions.push("edit");
-    if (issueLink) actions.push("copy_link");
-    if (issueLink) actions.push("open_web");
-    actions.push("delete");
-    const options = actions.map((action) =>
-      action === "cancel"
-        ? t("common:actions.cancel")
-        : action === "pin"
-          ? t("menu.pin")
-          : action === "unpin"
-            ? t("menu.unpin")
-            : action === "edit"
-              ? t("menu.edit_details")
-              : action === "copy_link"
-                ? t("menu.copy_link")
-                : action === "open_web"
-                  ? t("menu.open_web")
-                  : t("menu.delete_issue"),
-    );
-    const destructiveIndex = options.length - 1;
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: destructiveIndex,
-        title: issue.identifier,
-      },
-      (i) => {
-        const action = actions[i];
-        if (action === "pin") {
-          createPin.mutate({ item_type: "issue", item_id: issue.id });
-        } else if (action === "unpin") {
-          deletePin.mutate({ itemType: "issue", itemId: issue.id });
-        } else if (action === "edit") {
-          if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
-        } else if (action === "copy_link" && issueLink) {
-          Clipboard.setStringAsync(issueLink);
-        } else if (action === "open_web" && issueLink) {
-          Linking.openURL(issueLink);
-        } else if (action === "delete") {
-          confirmDelete(issue, t, () =>
-            deleteIssue.mutate(issue.id, {
-              onSuccess: () => router.back(),
-            }),
-          );
-        }
-      },
-    );
-  }, [issue, wsSlug, deleteIssue, isPinned, createPin, deletePin, t]);
 
   return (
     <View className="flex-1 bg-background">
@@ -206,10 +148,37 @@ export default function IssueDetail() {
                    *  active tasks, so it doesn't crowd the header in the
                    *  common case. See agent-header-badge.tsx. */}
                   <AgentHeaderBadge issueId={id} />
-                  <IconButton
-                    name="ellipsis-horizontal"
-                    onPress={onPressMore}
-                    accessibilityLabel={t("menu.issue_actions")}
+                  <IssueActionsMenu
+                    isPinned={isPinned}
+                    hasWebLink={!!issueLink}
+                    onPin={() =>
+                      createPin.mutate({
+                        item_type: "issue",
+                        item_id: issue.id,
+                      })
+                    }
+                    onUnpin={() =>
+                      deletePin.mutate({
+                        itemType: "issue",
+                        itemId: issue.id,
+                      })
+                    }
+                    onEdit={() =>
+                      router.push(`/${wsSlug}/issue/${issue.id}/edit`)
+                    }
+                    onCopyLink={() => {
+                      if (issueLink) void Clipboard.setStringAsync(issueLink);
+                    }}
+                    onOpenWeb={() => {
+                      if (issueLink) void Linking.openURL(issueLink);
+                    }}
+                    onDelete={() =>
+                      confirmDelete(issue, t, () =>
+                        deleteIssue.mutate(issue.id, {
+                          onSuccess: () => router.back(),
+                        }),
+                      )
+                    }
                   />
                 </View>
               )
