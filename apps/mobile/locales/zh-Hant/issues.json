@@ -223,6 +223,12 @@
     "discard": "放棄",
     "discard_a11y": "放棄失敗的評論"
   },
+  "image": {
+    "load_error": "無法載入圖片",
+    "retry": "重試",
+    "retry_a11y": "重試載入圖片",
+    "open_a11y": "開啟圖片"
+  },
   "resources": {
     "title": "新增倉庫",
     "url": "倉庫 URL",

@@ -227,6 +227,12 @@
     "discard": "Discard",
     "discard_a11y": "Discard failed comment"
   },
+  "image": {
+    "load_error": "Couldn't load image",
+    "retry": "Try again",
+    "retry_a11y": "Retry loading image",
+    "open_a11y": "Open image"
+  },
   "resources": {
     "title": "Attach repository",
     "url": "Repository URL",
