@@ -204,6 +204,12 @@ type AndroidPushDelivery struct {
 	LastErrorCode string             `json:"last_error_code"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	SentAt        pgtype.Timestamptz `json:"sent_at"`
+	ActorType     pgtype.Text        `json:"actor_type"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	EventCategory string             `json:"event_category"`
+	EventTitle    string             `json:"event_title"`
+	EventBody     string             `json:"event_body"`
+	EventDetails  []byte             `json:"event_details"`
 }
 
 type AndroidPushEndpoint struct {

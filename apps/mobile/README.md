@@ -1,6 +1,6 @@
-# Multica Mobile (iOS)
+# Multica Mobile (iOS and Android)
 
-Expo + React Native iOS client for Multica. Independent from web/desktop — shares types and pure utilities from `@multica/core/`. See [`AGENTS.md`](./AGENTS.md) for mobile architecture and development rules; `package.json` records the current dependency versions.
+Expo + React Native client for Multica. Independent from web/desktop — shares types and pure utilities from `@multica/core/`. See [`AGENTS.md`](./AGENTS.md) for mobile architecture and development rules; `package.json` records the current dependency versions.
 
 ## Just want to use it on your phone? (no development)
 
@@ -49,6 +49,9 @@ Everything below is for app developers — you can ignore the rest if you only w
 | `pnpm ios:mobile:device:staging:release` | Full rebuild + install on **USB iPhone**, Release (standalone) | staging |
 | `pnpm ios:mobile:device:prod` | Full rebuild + install on **USB iPhone**, Debug | production |
 | `pnpm ios:mobile:device:prod:release` | Full rebuild + install on **USB iPhone**, Release (standalone) | production |
+| `pnpm -C apps/mobile android` | Full rebuild + install on Android, Debug | local |
+| `pnpm -C apps/mobile android:staging` | Full rebuild + install on Android, Debug | staging |
+| `pnpm -C apps/mobile android:prod` | Full rebuild + install on Android, Debug | production |
 
 `dev:*` runs Metro only — assumes the matching variant is already installed. `ios:mobile*` does a full native rebuild + install.
 
@@ -96,13 +99,30 @@ editor, select an image, and confirm the upload completes. From the issue editor
 also attach a document and confirm its picker dismisses and the upload completes.
 Unit tests do not replace this device validation.
 
-### Android notification routing
+### Android alerts through ntfy
 
-UnifiedPush transport code must queue the reviewed, versioned destination
-instead of opening payload-provided routes or URLs. See
+Android alerts require a development/native build; Expo Go cannot load the
+local UnifiedPush module. Install the ntfy Android app, configure its account
+and UnifiedPush distributor, then open **More → Settings → Notifications** in
+Multica. Setup registers with ntfy and the Multica backend before Android 13+
+asks for notification permission.
+
+The generated app includes the local
+`modules/multica-android-alerts` Expo module and UnifiedPush connector. After
+changing native module code, regenerate and compile Android:
+
+```bash
+cd apps/mobile
+pnpm exec expo prebuild --clean --platform android
+pnpm android
+```
+
+UnifiedPush transport code queues the reviewed, versioned destination instead
+of opening payload-provided routes or URLs. See
 [`docs/notification-destinations.md`](./docs/notification-destinations.md) for
 the payload schema, auth resume lifecycle, workspace authorization checks,
-repeated-tap behavior, and recovery contract.
+repeated-tap behavior, and recovery contract. Server and ntfy setup is in
+[`../../docs/android-ntfy-unifiedpush.md`](../../docs/android-ntfy-unifiedpush.md).
 
 ## First-time setup
 

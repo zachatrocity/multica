@@ -906,6 +906,9 @@ export interface AppConfigResponse {
    * DELETE /api/comments/{id}/keep-replies. Older servers deleted the replies
    * too, so absent must be treated as false (#8296). */
   comment_delete_keep_replies_supported?: boolean;
+  /** Whether the server has a configured ntfy UnifiedPush delivery service.
+   * Absent on older servers; mobile must keep setup hidden in that case. */
+  android_push_available?: boolean;
   server_version?: string;
 }
 
@@ -1167,6 +1170,7 @@ export const AppConfigSchema = z.object({
   agent_conversation_starters_supported: BooleanWithDefaultSchema(false),
   issue_create_properties_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
+  android_push_available: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
 }).loose();
 
@@ -1190,6 +1194,8 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   issue_create_properties_supported: false,
   // Fail closed: old servers delete a comment's replies with it.
   comment_delete_keep_replies_supported: false,
+  // Fail closed: the mobile app must not offer setup against an old server.
+  android_push_available: false,
   feature_flags: {},
 };
 

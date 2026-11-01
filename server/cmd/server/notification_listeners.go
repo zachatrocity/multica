@@ -92,6 +92,9 @@ func enqueueAndroidPush(
 	notifType string,
 	statusIsHandoff bool,
 	details []byte,
+	e events.Event,
+	title string,
+	body string,
 ) bool {
 	if push == nil {
 		return false
@@ -113,6 +116,11 @@ func enqueueAndroidPush(
 		InboxItemID: inboxItemID,
 		EventType:   notifType,
 		Category:    category,
+		ActorType:   e.ActorType,
+		ActorID:     e.ActorID,
+		Title:       title,
+		Body:        body,
+		Details:     details,
 	})
 	if err != nil {
 		slog.Error("android push enqueue failed", "workspace_id", workspaceID,
@@ -515,7 +523,7 @@ func notifyIssueSubscribers(
 			inboxMuted = isNotifMuted(prefs, notifType)
 		}
 		if inboxMuted {
-			if enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, nil, notifType, statusIsHandoff, details) {
+			if enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, nil, notifType, statusIsHandoff, details, e, title, body) {
 				notified[subID] = true
 			}
 			continue
@@ -538,20 +546,20 @@ func notifyIssueSubscribers(
 		if err != nil {
 			slog.Error("subscriber notification creation failed",
 				"subscriber_id", subID, "type", notifType, "error", err)
-			if enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, nil, notifType, statusIsHandoff, details) {
+			if enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, nil, notifType, statusIsHandoff, details, e, title, body) {
 				notified[subID] = true
 			}
 			continue
 		}
 		if !inserted {
-			if enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, nil, notifType, statusIsHandoff, details) {
+			if enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, nil, notifType, statusIsHandoff, details, e, title, body) {
 				notified[subID] = true
 			}
 			continue
 		}
 
 		inboxItemID := util.UUIDToString(item.ID)
-		enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, &inboxItemID, notifType, statusIsHandoff, details)
+		enqueueAndroidPush(ctx, push, subID, workspaceID, targetIssueID, itemID, &inboxItemID, notifType, statusIsHandoff, details, e, title, body)
 		notified[subID] = true
 		resp := inboxItemToResponse(item)
 		resp["issue_status"] = issueStatus
@@ -597,7 +605,7 @@ func notifyDirect(
 	if recipientType == "member" {
 		prefs := loadUserPrefs(ctx, queries, workspaceID, []string{recipientID})
 		if p, ok := prefs[recipientID]; ok && isNotifMuted(p, notifType) {
-			enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, nil, notifType, false, details)
+			enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, nil, notifType, false, details, e, title, body)
 			return
 		}
 	}
@@ -620,20 +628,20 @@ func notifyDirect(
 		slog.Error("direct notification creation failed",
 			"issue_id", issueID, "recipient_id", recipientID, "type", notifType, "error", err)
 		if recipientType == "member" {
-			enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, nil, notifType, false, details)
+			enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, nil, notifType, false, details, e, title, body)
 		}
 		return
 	}
 	if !inserted {
 		if recipientType == "member" {
-			enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, nil, notifType, false, details)
+			enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, nil, notifType, false, details, e, title, body)
 		}
 		return
 	}
 
 	if recipientType == "member" {
 		inboxItemID := util.UUIDToString(item.ID)
-		enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, &inboxItemID, notifType, false, details)
+		enqueueAndroidPush(ctx, push, recipientID, workspaceID, issueID, itemID, &inboxItemID, notifType, false, details, e, title, body)
 	}
 	resp := inboxItemToResponse(item)
 	resp["issue_status"] = issueStatus
@@ -659,6 +667,7 @@ func notifyMentionedMembers(
 	issueTitle string,
 	issueStatus string,
 	title string,
+	body string,
 	skip map[string]bool,
 	details []byte,
 ) {
@@ -731,7 +740,7 @@ func notifyMentionedMembers(
 		itemID := dbid.NewV7()
 		// Inbox and Android preferences are deliberately independent.
 		if p, ok := mentionPrefs[id]; ok && isNotifMuted(p, "mentioned") {
-			enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, nil, "mentioned", false, details)
+			enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, nil, "mentioned", false, details, e, title, body)
 			continue
 		}
 		item, inserted, err := inbox.CreateIfEligible(context.Background(), queries, db.CreateInboxItemParams{
@@ -749,15 +758,15 @@ func notifyMentionedMembers(
 		})
 		if err != nil {
 			slog.Error("mention inbox creation failed", "mentioned_id", id, "error", err)
-			enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, nil, "mentioned", false, details)
+			enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, nil, "mentioned", false, details, e, title, body)
 			continue
 		}
 		if !inserted {
-			enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, nil, "mentioned", false, details)
+			enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, nil, "mentioned", false, details, e, title, body)
 			continue
 		}
 		inboxItemID := util.UUIDToString(item.ID)
-		enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, &inboxItemID, "mentioned", false, details)
+		enqueueAndroidPush(context.Background(), push, id, e.WorkspaceID, issueID, itemID, &inboxItemID, "mentioned", false, details, e, title, body)
 		resp := inboxItemToResponse(item)
 		resp["issue_status"] = issueStatus
 		bus.Publish(events.Event{
@@ -811,7 +820,7 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries, push *a
 		if issue.Description != nil && *issue.Description != "" {
 			mentions := parseMentions(*issue.Description)
 			notifyMentionedMembers(bus, queries, push, e, mentions, issue.ID, issue.Title, issue.Status,
-				issue.Title, skip, emptyDetails)
+				issue.Title, *issue.Description, skip, emptyDetails)
 		}
 	})
 
@@ -1000,7 +1009,7 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries, push *a
 				}
 				skip := map[string]bool{e.ActorID: true}
 				notifyMentionedMembers(bus, queries, push, e, added, issue.ID, issue.Title, issue.Status,
-					issue.Title, skip, emptyDetails)
+					issue.Title, *issue.Description, skip, emptyDetails)
 			}
 		}
 	})
@@ -1063,7 +1072,7 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries, push *a
 		if len(mentions) > 0 {
 			skip := map[string]bool{e.ActorID: true}
 			notifyMentionedMembers(bus, queries, push, e, mentions, issueID, issueTitle, issueStatus,
-				issueTitle, skip, commentDetails)
+				issueTitle, commentContent, skip, commentDetails)
 		}
 	})
 

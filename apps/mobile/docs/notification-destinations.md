@@ -33,10 +33,14 @@ Allowed event types:
 - `review_requested`
 - `task_failed`
 - `agent_blocked`
+- `children_done`
+- `reaction_added`
+- `task_completed`
+- `agent_completed`
 
 The object is strict. URLs, hosts, route names, unknown event types, unknown fields, malformed identifiers, and unsupported versions are never used as navigation. If the workspace id and slug remain valid, invalid issue payloads fall back to that revalidated workspace inbox; otherwise the tap is rejected.
 
-Display title/body/excerpts are not routing data and do not belong in this object. Endpoint/topic credentials never belong in notification content, destination data, logs, or analytics.
+Display title/body/excerpts are not routing data and do not belong in this object. The native notification service extracts only the allowlisted identifier fields into this strict object before queuing a tap. Endpoint/topic credentials never belong in notification content, destination data, logs, or analytics.
 
 ## Lifecycle
 

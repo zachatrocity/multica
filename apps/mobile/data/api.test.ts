@@ -9,6 +9,9 @@ vi.hoisted(() => {
 
 // The real store pulls in expo-secure-store; the client only needs the slug.
 vi.mock("@/data/workspace-store", () => ({ getCurrentSlug: () => null }));
+// Vitest does not transform React Native's Flow sources.
+vi.mock("react-native", () => ({ Platform: { OS: "android" } }));
+
 
 describe("api.deleteComment", () => {
   const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));

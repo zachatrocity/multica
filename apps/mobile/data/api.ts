@@ -13,6 +13,7 @@
  *   3. X-Request-ID per request + structured logger (debug + tracing)
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
+import { Platform } from "react-native";
 import type {
   Agent,
   AgentTask,
@@ -82,6 +83,10 @@ import {
   ActiveTasksResponseSchema,
   AgentListSchema,
   AgentTaskListSchema,
+  AndroidPushEndpointListSchema,
+  AndroidPushEndpointSchema,
+  AndroidPushPreferenceSchema,
+  AndroidPushTestResultSchema,
   AttachmentListSchema,
   AttachmentSchema,
   ChatMessageListSchema,
@@ -92,6 +97,9 @@ import {
   EMPTY_ACTIVE_TASKS_RESPONSE,
   EMPTY_AGENT_LIST,
   EMPTY_AGENT_TASK_LIST,
+  EMPTY_ANDROID_PUSH_ENDPOINT,
+  EMPTY_ANDROID_PUSH_ENDPOINTS,
+  EMPTY_ANDROID_PUSH_PREFERENCE,
   EMPTY_ATTACHMENT_LIST,
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
@@ -133,6 +141,11 @@ import {
   UserSchema,
   WorkspaceListSchema,
 } from "./schemas";
+import type {
+  AndroidPushEndpoint,
+  AndroidPushPreference,
+  AndroidPushTestResult,
+} from "./schemas";
 import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
 import { parseWithFallback } from "@/lib/parse-response";
@@ -162,6 +175,10 @@ export interface FileAsset {
   name: string;
   type: string;
 }
+
+export type AndroidPushPreferencePatch = Partial<
+  Omit<AndroidPushPreference, "workspace_id">
+>;
 
 /** Web mirrors this from `packages/core/constants/upload.ts`. Mobile keeps
  *  its own copy per the `mirror, don't import` rule in apps/mobile/CLAUDE.md. */
@@ -215,19 +232,20 @@ class ApiClient {
 
   private async fetch<T>(
     path: string,
-    init: RequestInit & { signal?: AbortSignal } = {},
+    init: RequestInit & { signal?: AbortSignal; skipUnauthorized?: boolean } = {},
   ): Promise<T> {
+    const { skipUnauthorized = false, ...requestInit } = init;
     const rid = createRequestId();
     const start = Date.now();
-    const method = init.method ?? "GET";
+    const method = requestInit.method ?? "GET";
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "X-Client-Platform": "mobile",
-      "X-Client-OS": "ios",
+      "X-Client-OS": Platform.OS,
       "X-Client-Version": "0.1.0",
       "X-Request-ID": rid,
-      ...((init.headers as Record<string, string>) ?? {}),
+      ...((requestInit.headers as Record<string, string>) ?? {}),
     };
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
@@ -254,7 +272,7 @@ class ApiClient {
     const timeoutId = setTimeout(() => {
       controller.abort(new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms`));
     }, FETCH_TIMEOUT_MS);
-    const callerSignal = init.signal;
+    const callerSignal = requestInit.signal;
     const onCallerAbort = () => controller.abort(callerSignal?.reason);
     if (callerSignal) {
       if (callerSignal.aborted) controller.abort(callerSignal.reason);
@@ -266,7 +284,7 @@ class ApiClient {
     let res: Response;
     try {
       res = await fetch(`${API_URL}${path}`, {
-        ...init,
+        ...requestInit,
         signal: controller.signal,
         headers,
       });
@@ -300,7 +318,7 @@ class ApiClient {
       // 401 sign-out hook: invoke once, let the platform layer (auth-store)
       // clear the token + navigate. Subsequent requests in flight will also
       // 401 and re-enter here, so the callback must be idempotent.
-      if (res.status === 401) {
+      if (res.status === 401 && !skipUnauthorized) {
         this.options.onUnauthorized?.();
       }
 
@@ -430,6 +448,82 @@ class ApiClient {
       AppConfigSchema,
       EMPTY_APP_CONFIG,
       { ...opts, endpoint: "getConfig" },
+    );
+  }
+
+  async listAndroidPushEndpoints(opts?: {
+    signal?: AbortSignal;
+  }): Promise<AndroidPushEndpoint[]> {
+    return this.fetchValidated(
+      "/api/android-push/endpoints",
+      AndroidPushEndpointListSchema,
+      EMPTY_ANDROID_PUSH_ENDPOINTS,
+      { ...opts, endpoint: "listAndroidPushEndpoints" },
+    );
+  }
+
+  async registerAndroidPushEndpoint(data: {
+    device_id: string;
+    endpoint: string;
+    app_variant: string;
+  }): Promise<AndroidPushEndpoint> {
+    return this.fetchValidatedWith(
+      "/api/android-push/endpoints",
+      AndroidPushEndpointSchema,
+      EMPTY_ANDROID_PUSH_ENDPOINT,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "registerAndroidPushEndpoint" },
+    );
+  }
+
+  async deleteAndroidPushEndpoint(endpointId: string): Promise<void> {
+    await this.fetch<void>(`/api/android-push/endpoints/${endpointId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async revokeAndroidPushDevice(
+    deviceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    await this.fetch<void>("/api/android-push/endpoints/revoke-device", {
+      method: "POST",
+      body: JSON.stringify({ device_id: deviceId }),
+      signal: opts?.signal,
+      skipUnauthorized: true,
+    });
+  }
+
+  async getAndroidPushPreference(opts?: {
+    signal?: AbortSignal;
+  }): Promise<AndroidPushPreference> {
+    return this.fetchValidated(
+      "/api/android-push/preferences",
+      AndroidPushPreferenceSchema,
+      EMPTY_ANDROID_PUSH_PREFERENCE,
+      { ...opts, endpoint: "getAndroidPushPreference" },
+    );
+  }
+
+  async patchAndroidPushPreference(
+    data: AndroidPushPreferencePatch,
+  ): Promise<AndroidPushPreference> {
+    return this.fetchValidatedWith(
+      "/api/android-push/preferences",
+      AndroidPushPreferenceSchema,
+      EMPTY_ANDROID_PUSH_PREFERENCE,
+      { method: "PATCH", body: JSON.stringify(data) },
+      { endpoint: "patchAndroidPushPreference" },
+    );
+  }
+
+  async sendAndroidPushTest(deviceId: string): Promise<AndroidPushTestResult> {
+    return this.fetchValidatedWith(
+      "/api/android-push/test",
+      AndroidPushTestResultSchema,
+      { event_id: "", status: "" },
+      { method: "POST", body: JSON.stringify({ device_id: deviceId }) },
+      { endpoint: "sendAndroidPushTest" },
     );
   }
 
@@ -1316,7 +1410,7 @@ class ApiClient {
     const headers: Record<string, string> = {
       // No Content-Type — let fetch set the multipart boundary.
       "X-Client-Platform": "mobile",
-      "X-Client-OS": "ios",
+      "X-Client-OS": Platform.OS,
       "X-Client-Version": "0.1.0",
       "X-Request-ID": rid,
     };

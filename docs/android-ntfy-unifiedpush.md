@@ -36,7 +36,7 @@ Configure ntfy according to its authentication and access-control documentation.
 2. The Multica token can publish only to the UnifiedPush endpoint namespace used by the distributor.
 3. The Android distributor can receive those messages.
 4. Reverse proxies preserve `Authorization`, request bodies, and successful 2xx responses.
-5. Request-size limits allow Multica's JSON payloads; payloads are intentionally small and contain no conversation body.
+5. Request-size limits allow Multica's JSON payloads; payloads contain only bounded display copy, never full conversation bodies.
 
 Never place the access token or a UnifiedPush endpoint in a URL, screenshot, log, issue, analytics property, or notification copy.
 
@@ -52,15 +52,40 @@ Workspace alert preferences are separate from inbox inclusion preferences. A dev
 - Comments: off
 - Routine status and issue updates: off
 
-Real event and test deliveries use the same durable delivery worker. Each payload contains only:
+Real event and test deliveries use the same durable delivery worker. The
+versioned payload contains stable event/workspace/resource identifiers,
+`workspace_slug`, bounded server-generated display copy, and the reviewed
+`action_needed` or `activity` channel classification. It never contains an
+endpoint, access token, arbitrary route/URL, or an unbounded issue/comment
+body. The Android service constructs a separate strict routing object from the
+reviewed identifier fields before opening the app.
 
-- schema version;
-- stable event identifier;
-- event type;
-- workspace identifier;
-- optional issue, comment, and inbox identifiers.
+The Android client deduplicates by `event_id` because a network failure after
+ntfy accepted a request can cause a retry with the same identifier. It replaces
+notifications by workspace + issue, groups active notifications by workspace,
+and uses the app's authenticated destination resolver for taps. Payload fields
+remain untrusted identifiers: the resolver re-checks authentication, workspace
+membership, and issue access before navigation.
 
-The Android client must deduplicate by `event_id` because a network failure after ntfy accepted a request can cause a retry with the same identifier. It must treat payload fields as untrusted identifiers and re-check authentication and workspace/resource access before navigation.
+## Android app behavior
+
+In the app, open **More → Settings → Notifications → Set up Android alerts**.
+The connection flow only accepts an installed ntfy UnifiedPush distributor.
+It registers the returned endpoint with Multica before requesting Android 13+
+notification permission; declining permission leaves workspace delivery
+disabled and exposes a direct link to Android's app settings.
+
+Multica creates two app-owned Android channels:
+
+- **Action needed** — mentions, assignments, review handoffs, blocked work, and failures.
+- **Activity** — comments and routine issue activity.
+
+Android owns sound, vibration, and importance for both channels. The settings
+screen rechecks app permission and each channel after returning from system
+settings. Lock-screen copy is private by default, and the app stores the
+UnifiedPush endpoint with an Android Keystore key. Signing out calls the
+authenticated device-revocation endpoint, unregisters from ntfy, and clears
+the local endpoint even when server revocation cannot complete.
 
 ## Failure and retention behavior
 
