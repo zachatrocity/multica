@@ -50,6 +50,14 @@ back for review. Self-hostable, works with the agent CLIs you already use, no lo
 
 ---
 
+## Android (this fork)
+
+[**Open in Obtainium**](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522ai.multica.mobile%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fzachatrocity%252Fmultica%2522%252C%2522author%2522%253A%2522zachatrocity%2522%252C%2522name%2522%253A%2522Multica%2522%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522apkFilterRegEx%255C%2522%253A%255C%2522%255Emultica-android%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522fallbackToOlderReleases%255C%2522%253Atrue%257D%2522%257D) · [Download APK releases](https://github.com/zachatrocity/multica/releases)
+
+Open the link on Android with [Obtainium](https://obtainium.imranr.dev/) installed to add this fork and track its published APK releases. If the link does not open the app, add `https://github.com/zachatrocity/multica` as the source URL in Obtainium.
+
+Obtainium tracks release assets, not GitHub Actions artifacts. A successful CI build becomes available here only after its APK is published to a release.
+
 ## What is Multica?
 
 You already run Claude Code, Codex, and three other agents. Each one lives in its own terminal
