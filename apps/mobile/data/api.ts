@@ -257,21 +257,27 @@ class ApiClient {
       headers["X-Workspace-Slug"] = slug;
     }
 
-    // Timeout + caller-signal forwarding.
-    //
-    // Hermes does NOT support AbortSignal.timeout() or AbortSignal.any() —
-    // see facebook/react-native#42042 and livekit#4014. So we manually
-    // compose a single controller that aborts on:
-    //   (a) caller-side signal (TQ cancelling a stale/inactive query, etc),
-    //   (b) 30s timeout (defends against iOS suspending the network task
-    //       silently during background — fetch() then never resolves;
-    //       facebook/react-native#35384). Without this, a refetch
-    //       triggered by WS reconnect can leave the FlatList pull-to-refresh
-    //       spinner stuck on the screen indefinitely.
+    // Hermes does not provide AbortSignal.timeout()/any(), so one controller
+    // forwards caller cancellation while a separate deadline promise bounds
+    // the entire exchange. The deadline remains active through body parsing:
+    // React Native can deliver headers and then stall while reading JSON.
     const controller = new AbortController();
+    const deadlineController = new AbortController();
     const timeoutId = setTimeout(() => {
-      controller.abort(new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms`));
+      const timeoutError = new ApiError(
+        `Request timed out after ${FETCH_TIMEOUT_MS}ms`,
+        0,
+      );
+      deadlineController.abort(timeoutError);
+      controller.abort(timeoutError);
     }, FETCH_TIMEOUT_MS);
+    const deadline = new Promise<never>((_, reject) => {
+      deadlineController.signal.addEventListener(
+        "abort",
+        () => reject(deadlineController.signal.reason),
+        { once: true },
+      );
+    });
     const callerSignal = requestInit.signal;
     const onCallerAbort = () => controller.abort(callerSignal?.reason);
     if (callerSignal) {
@@ -282,38 +288,42 @@ class ApiClient {
     console.log(`[api] → ${method} ${path}`, { rid });
 
     let res: Response;
+    let body: unknown;
     try {
-      res = await fetch(`${API_URL}${path}`, {
-        ...requestInit,
-        signal: controller.signal,
-        headers,
-      });
-    } catch (err) {
-      clearTimeout(timeoutId);
-      callerSignal?.removeEventListener("abort", onCallerAbort);
-      // Re-throw with a clearer message if this was our own timeout abort.
-      if (
-        err instanceof Error &&
-        err.name === "AbortError" &&
-        !callerSignal?.aborted
-      ) {
+      res = await Promise.race([
+        fetch(`${API_URL}${path}`, {
+          ...requestInit,
+          signal: controller.signal,
+          headers,
+        }),
+        deadline,
+      ]);
+
+      if (res.status !== 204) {
+        try {
+          body = await Promise.race([res.json(), deadline]);
+        } catch (error) {
+          if (deadlineController.signal.aborted) throw error;
+          if (res.ok) throw error;
+          body = undefined;
+        }
+      }
+    } catch (error) {
+      if (deadlineController.signal.aborted) {
         const duration = Date.now() - start;
         console.warn(`[api] ← TIMEOUT ${path}`, {
           rid,
           duration: `${duration}ms`,
         });
-        throw new ApiError(
-          `Request timed out after ${FETCH_TIMEOUT_MS}ms`,
-          0,
-          undefined,
-        );
+        throw deadlineController.signal.reason;
       }
-      throw err;
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
     }
-    clearTimeout(timeoutId);
-    callerSignal?.removeEventListener("abort", onCallerAbort);
-    const duration = Date.now() - start;
 
+    const duration = Date.now() - start;
     if (!res.ok) {
       // 401 sign-out hook: invoke once, let the platform layer (auth-store)
       // clear the token + navigate. Subsequent requests in flight will also
@@ -322,15 +332,9 @@ class ApiClient {
         this.options.onUnauthorized?.();
       }
 
-      let body: unknown;
-      try {
-        body = await res.json();
-      } catch {
-        body = undefined;
-      }
       const message =
         (body && typeof body === "object" && "message" in body
-          ? String((body as { message: unknown }).message)
+          ? String(body.message)
           : null) ?? `${res.status} ${res.statusText}`;
 
       const level = res.status === 404 ? "warn" : "error";
@@ -349,7 +353,7 @@ class ApiClient {
     });
 
     if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    return body as T;
   }
 
   /**
@@ -371,9 +375,16 @@ class ApiClient {
     path: string,
     schema: ZodType,
     fallback: T,
-    opts?: { signal?: AbortSignal; endpoint?: string },
+    opts?: {
+      signal?: AbortSignal;
+      endpoint?: string;
+      skipUnauthorized?: boolean;
+    },
   ): Promise<T> {
-    const raw = await this.fetch<unknown>(path, { signal: opts?.signal });
+    const raw = await this.fetch<unknown>(path, {
+      signal: opts?.signal,
+      skipUnauthorized: opts?.skipUnauthorized,
+    });
     return parseWithFallback(raw, schema, fallback, {
       endpoint: opts?.endpoint ?? path,
     });
@@ -433,12 +444,18 @@ class ApiClient {
     );
   }
 
-  async getMe(opts?: { signal?: AbortSignal }): Promise<User> {
+  async getMe(opts?: {
+    signal?: AbortSignal;
+    skipUnauthorized?: boolean;
+  }): Promise<User> {
     return this.fetchValidated(
       "/api/me",
       UserSchema,
       EMPTY_USER,
-      { ...opts, endpoint: "getMe" },
+      {
+        ...opts,
+        endpoint: "getMe",
+      },
     );
   }
 

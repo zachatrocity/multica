@@ -212,10 +212,10 @@ UnifiedPush and ntfy are best-effort transports. Android force-stop, distributor
 Deploy migration `606_android_push_webpush_keys` with the backend before
 installing the upgraded APK. The migration quarantines endpoint-only
 registrations created by older APKs; they are never used for plaintext
-delivery. On first authenticated app start, versionCode `2026110101` asks the
-existing distributor for the current endpoint and key set, then replaces the
-quarantined row. A reconnect from the notification settings screen performs the
-same registration if background refresh cannot complete.
+delivery. On first authenticated app start, versionCode `2026110101` or newer
+asks the existing distributor for the current endpoint and key set, then
+replaces the quarantined row. Reconnecting from the notification settings
+screen performs the same registration if background refresh cannot complete.
 
 Keep the existing ntfy base URL, publisher authentication choice, and
 `MULTICA_NTFY_SECRET_KEY`. No VAPID or other sender token is required. After the

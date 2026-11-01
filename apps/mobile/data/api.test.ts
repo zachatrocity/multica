@@ -24,6 +24,7 @@ describe("api.deleteComment", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -39,5 +40,30 @@ describe("api.deleteComment", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({ method: "DELETE" }));
+  });
+});
+
+describe("api request deadline", () => {
+  it("continues through response parsing and bounds a hanging JSON body", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const response = new Response(null, { status: 200 });
+    const { promise: hangingBody } = Promise.withResolvers<never>();
+    vi.spyOn(response, "json").mockReturnValue(hangingBody);
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+
+    const request = api.getMe();
+    const rejection = expect(request).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await rejection;
+    expect(console.warn).toHaveBeenCalledWith(
+      "[api] ← TIMEOUT /api/me",
+      expect.objectContaining({ duration: "30000ms" }),
+    );
   });
 });

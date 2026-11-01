@@ -30,6 +30,9 @@ prewarmHighlighter();
 
 function AuthInitializer({ children }: { children: React.ReactNode }) {
   const initialize = useAuthStore((s) => s.initialize);
+  const setUnexpectedStartupFailure = useAuthStore(
+    (s) => s.setUnexpectedStartupFailure,
+  );
   const qc = useQueryClient();
   // Idempotent guard: 401 on multiple in-flight requests would otherwise
   // logout/navigate repeatedly during the same session-expire moment.
@@ -56,11 +59,17 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
         })();
       },
     });
-    // Launch check for the sliding session (MUL-7436). Runs after the token
-    // is restored and the identity probe has settled, so it never races the
-    // first getMe(); a no-op when there is no session to extend.
-    void initialize().then(() => maybeRenewSession());
-  }, [initialize, qc]);
+    // Launch check for the sliding session (MUL-7436). Runs only after a
+    // complete startup; failed attempts stay recoverable on the entry screen.
+    void initialize()
+      .then(() => {
+        const state = useAuthStore.getState();
+        if (state.startupPhase === "ready" && !state.startupFailure) {
+          maybeRenewSession();
+        }
+      })
+      .catch(() => setUnexpectedStartupFailure());
+  }, [initialize, qc, setUnexpectedStartupFailure]);
 
   // Foreground transitions are one of the two "someone is using this" signals;
   // SessionActivityBoundary below supplies the other, so an app that stays
