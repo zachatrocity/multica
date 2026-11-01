@@ -188,6 +188,57 @@ type AgentToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type AndroidPushDelivery struct {
+	ID            pgtype.UUID        `json:"id"`
+	EndpointID    pgtype.UUID        `json:"endpoint_id"`
+	InboxItemID   pgtype.UUID        `json:"inbox_item_id"`
+	EventID       pgtype.UUID        `json:"event_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	EventType     string             `json:"event_type"`
+	Status        string             `json:"status"`
+	Attempts      int32              `json:"attempts"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	LeaseUntil    pgtype.Timestamptz `json:"lease_until"`
+	LastErrorCode string             `json:"last_error_code"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	SentAt        pgtype.Timestamptz `json:"sent_at"`
+}
+
+type AndroidPushEndpoint struct {
+	ID                pgtype.UUID        `json:"id"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	DeviceID          string             `json:"device_id"`
+	EndpointEncrypted []byte             `json:"endpoint_encrypted"`
+	EndpointHash      []byte             `json:"endpoint_hash"`
+	AppVariant        string             `json:"app_variant"`
+	Status            string             `json:"status"`
+	FailureCount      int32              `json:"failure_count"`
+	LastSuccessAt     pgtype.Timestamptz `json:"last_success_at"`
+	LastFailureAt     pgtype.Timestamptz `json:"last_failure_at"`
+	ActiveSince       pgtype.Timestamptz `json:"active_since"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	DisabledAt        pgtype.Timestamptz `json:"disabled_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AndroidPushPreference struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	UserID         pgtype.UUID        `json:"user_id"`
+	Enabled        bool               `json:"enabled"`
+	Mentions       bool               `json:"mentions"`
+	Assignments    bool               `json:"assignments"`
+	ReviewBlockers bool               `json:"review_blockers"`
+	Comments       bool               `json:"comments"`
+	RoutineUpdates bool               `json:"routine_updates"`
+	EnabledAt      pgtype.Timestamptz `json:"enabled_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Attachment struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

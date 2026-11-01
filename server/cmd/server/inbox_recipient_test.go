@@ -57,7 +57,7 @@ func TestCreateInboxItem_RecipientWorkspace(t *testing.T) {
 			bus := events.New()
 			count := 0
 			bus.Subscribe(protocol.EventInboxNew, func(events.Event) { count++ })
-			notifyDirect(context.Background(), queries, bus, tc.recipientType, tc.recipientID, testWorkspaceID,
+			notifyDirect(context.Background(), queries, bus, nil, tc.recipientType, tc.recipientID, testWorkspaceID,
 				events.Event{ActorType: "member", ActorID: testUserID}, issue, "todo", "reaction_added", "info", "Recipient guard", "", emptyDetails)
 			want := 0
 			if tc.allowed {

@@ -51,6 +51,9 @@ type AppConfig struct {
 	// false so the managed-cloud response keeps its previous shape; the UI
 	// defaults absent to false (hidden).
 	VCSIntegrationAvailable bool `json:"vcs_integration_available,omitempty"`
+	// AndroidPushAvailable means this deployment has an authenticated ntfy
+	// UnifiedPush publisher and endpoint encryption configured.
+	AndroidPushAvailable bool `json:"android_push_available,omitempty"`
 
 	// PostHog public config for the frontend. The key is the same Project
 	// API Key the backend uses; returning it here (instead of baking it
@@ -132,6 +135,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
 	config.DaemonSetupTarget = "self_host"
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
+	config.AndroidPushAvailable = h.AndroidPush != nil
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
 	// Only surface the build version on self-hosted deployments. The managed
 	// cloud is continuously deployed and its users can't choose the build, so

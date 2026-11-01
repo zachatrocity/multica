@@ -140,6 +140,15 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"604_android_push_delivery_event_index":                     "android_push_delivery_event_index",
+	"603_android_push_endpoint_expiry_index":                    "android_push_endpoint_expiry_index",
+	"602_android_push_delivery_due_index":                       "android_push_delivery_due_index",
+	"601_android_push_delivery_inbox_index":                     "android_push_delivery_inbox_index",
+	"600_android_push_delivery_id_index":                        "android_push_delivery_id_index",
+	"599_android_push_preference_scope_index":                   "android_push_preference_scope_index",
+	"598_android_push_preference_id_index":                      "android_push_preference_id_index",
+	"597_android_push_endpoint_device_index":                    "android_push_endpoint_device_index",
+	"596_android_push_endpoint_id_index":                        "android_push_endpoint_id_index",
 	"594_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
 	"563_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"562_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",

@@ -693,6 +693,14 @@ WITH
 deleted_members AS (
     DELETE FROM member WHERE member.workspace_id = $1
 ),
+deleted_android_push_deliveries AS (
+    DELETE FROM android_push_delivery
+    WHERE android_push_delivery.workspace_id = $1
+),
+deleted_android_push_preferences AS (
+    DELETE FROM android_push_preference
+    WHERE android_push_preference.workspace_id = $1
+),
 deleted_notification_preferences AS (
     DELETE FROM notification_preference
     WHERE notification_preference.workspace_id = $1

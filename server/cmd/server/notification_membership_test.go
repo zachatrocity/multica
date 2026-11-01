@@ -148,7 +148,7 @@ func TestNotification_CurrentMembership(t *testing.T) {
 				// Register only notification listeners: source events are delivered
 				// synchronously, with no sleeps or asynchronous observation window.
 				bus := events.New()
-				registerNotificationListeners(bus, db.New(testPool))
+				registerNotificationListeners(bus, db.New(testPool), nil)
 				eventCount := 0
 				bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
 					item := e.Payload.(map[string]any)["item"].(map[string]any)
