@@ -5,7 +5,7 @@ Multica uses ntfy as a UnifiedPush distributor. The Multica Android app owns the
 ## Prerequisites
 
 - A reachable ntfy server with HTTPS.
-- Auth enabled on ntfy. Create a dedicated publisher token; topic or endpoint obscurity is not authorization.
+- Auth enabled on ntfy by default. Create a dedicated publisher token; topic or endpoint obscurity is not authorization. Private-network deployments may explicitly opt into unauthenticated publishing as described below.
 - ACLs limiting that token to publishing on the UnifiedPush endpoint namespace used by the distributor.
 - The ntfy Android app installed and configured as the device's UnifiedPush distributor.
 - Multica and ntfy clocks synchronized. Endpoint expiry and retry scheduling use server time.
@@ -14,7 +14,7 @@ Do not use a public ntfy host by default. Multica does not deploy ntfy or create
 
 ## Backend configuration
 
-Set all three variables together and restart the backend:
+For authenticated publishing (the default), set all three variables together and restart the backend:
 
 ```dotenv
 MULTICA_NTFY_BASE_URL=https://ntfy.example.com
@@ -28,9 +28,24 @@ Generate the encryption key with `openssl rand -base64 32`. Keep it stable and b
 
 Docker Compose passes these variables through to the backend. The integration remains disabled when all three are empty. A partial or malformed configuration stops backend startup rather than storing plaintext endpoints or publishing without authentication.
 
+### Explicit unauthenticated publishing
+
+For a server whose access is controlled by a trusted private network, set
+`MULTICA_NTFY_ALLOW_UNAUTHENTICATED=true` and leave `MULTICA_NTFY_ACCESS_TOKEN`
+empty. `MULTICA_NTFY_BASE_URL` and `MULTICA_NTFY_SECRET_KEY` remain required;
+HTTPS, endpoint-origin validation, and encryption at rest are unchanged.
+No Authorization header is sent when the token is empty. If a token is supplied,
+it is still used even with the opt-in enabled; authorization errors never fall
+back to anonymous publishing. Unset/false opt-in preserves the token requirement.
+
+This does not configure or secure ntfy. Anyone who can reach an unauthenticated
+server and knows a topic may publish or read it according to the server ACLs.
+The operator must enforce the intended network boundary. Do not enable this on
+a publicly accessible server by default.
+
 ## ntfy configuration
 
-Configure ntfy according to its authentication and access-control documentation. The exact ACL commands depend on the ntfy deployment and endpoint namespace. Required outcome:
+Configure ntfy according to its authentication and access-control documentation. The exact ACL commands depend on the ntfy deployment and endpoint namespace. For authenticated mode, required outcome:
 
 1. Anonymous publishing is denied.
 2. The Multica token can publish only to the UnifiedPush endpoint namespace used by the distributor.

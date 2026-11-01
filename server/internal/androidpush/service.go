@@ -815,13 +815,10 @@ func (s *Service) processOne(ctx context.Context, deliveryID string) (bool, stri
 	if err != nil {
 		return true, "", err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	request, err := s.deliveryRequest(ctx, endpoint, body, delivery.EventID)
 	if err != nil {
 		return true, "", err
 	}
-	request.Header.Set("Authorization", "Bearer "+s.accessToken)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Idempotency-Key", delivery.EventID)
 	response, requestErr := s.httpClient.Do(request)
 	outcome := classifyDelivery(response, requestErr)
 	if response != nil {
@@ -970,4 +967,17 @@ func (s *Service) Cleanup(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Service) deliveryRequest(ctx context.Context, endpoint *url.URL, body []byte, eventID string) (*http.Request, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if s.accessToken != "" {
+		request.Header.Set("Authorization", "Bearer "+s.accessToken)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Idempotency-Key", eventID)
+	return request, nil
 }
