@@ -26,7 +26,7 @@ class MulticaAndroidAlertsModule : Module() {
         "distributor_name" to selected?.let { applicationLabel(context, it) },
         "registration_status" to AlertStore.registrationStatus(context),
         "registration_failure" to AlertStore.registrationFailure(context),
-        "endpoint_available" to (AlertStore.endpoint(context) != null),
+        "endpoint_available" to (AlertStore.registration(context) != null),
         "device_id" to AlertStore.deviceId(context),
         "permission" to permissionState(context),
         "app_notifications_enabled" to NotificationRenderer.notificationsEnabled(context),
@@ -51,7 +51,7 @@ class MulticaAndroidAlertsModule : Module() {
       val context = applicationContext()
       val distributor = AlertStore.distributor(context) ?: return@AsyncFunction false
       if (distributor !in ntfyDistributors(context)) {
-        AlertStore.clearEndpoint(context)
+        AlertStore.clearRegistrationMaterial(context)
         AlertStore.setRegistrationStatus(context, "failed", "distributor_unavailable")
         return@AsyncFunction false
       }
@@ -66,8 +66,14 @@ class MulticaAndroidAlertsModule : Module() {
       AlertStore.clearRegistration(context)
     }
 
-    Function("getEndpoint") {
-      AlertStore.endpoint(applicationContext())
+    Function("getRegistration") {
+      AlertStore.registration(applicationContext())?.let {
+        mapOf(
+          "endpoint" to it.endpoint,
+          "p256dh" to it.p256dh,
+          "auth" to it.auth,
+        )
+      }
     }
 
     Function("getDeviceId") {

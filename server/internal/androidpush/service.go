@@ -24,8 +24,9 @@ import (
 )
 
 var (
-	ErrEndpointNotFound   = errors.New("android push endpoint not found")
-	ErrPreferenceDisabled = errors.New("android alerts are disabled for this workspace")
+	ErrEndpointNotFound           = errors.New("android push endpoint not found")
+	ErrEndpointEncryptionRequired = errors.New("android push endpoint must be reconnected")
+	ErrPreferenceDisabled         = errors.New("android alerts are disabled for this workspace")
 )
 
 type Service struct {
@@ -52,6 +53,14 @@ type Endpoint struct {
 	ExpiresAt     time.Time  `json:"expires_at"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type Registration struct {
+	DeviceID   string
+	Endpoint   string
+	P256DH     string
+	Auth       string
+	AppVariant string
 }
 
 type Preference struct {
@@ -154,39 +163,58 @@ func (s *Service) endpointAllowed(raw string) (*url.URL, error) {
 	return endpoint, nil
 }
 
-func (s *Service) endpointHash(endpoint string) []byte {
+func (s *Service) subscriptionHash(endpoint string, publicKey, authSecret []byte) []byte {
 	mac := hmac.New(sha256.New, s.hashKey)
 	_, _ = mac.Write([]byte(endpoint))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write(publicKey)
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write(authSecret)
 	return mac.Sum(nil)
 }
 
-func (s *Service) RegisterEndpoint(ctx context.Context, userID, deviceID, rawEndpoint, appVariant string) (Endpoint, error) {
-	endpoint, err := s.endpointAllowed(rawEndpoint)
+func (s *Service) RegisterEndpoint(ctx context.Context, userID string, registration Registration) (Endpoint, error) {
+	endpoint, err := s.endpointAllowed(registration.Endpoint)
 	if err != nil {
 		return Endpoint{}, err
 	}
-	deviceID = strings.TrimSpace(deviceID)
+	publicKey, authSecret, err := decodeWebPushKeys(registration.P256DH, registration.Auth)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	deviceID := strings.TrimSpace(registration.DeviceID)
 	if deviceID == "" || len(deviceID) > 128 {
 		return Endpoint{}, errors.New("device_id must be between 1 and 128 characters")
 	}
-	appVariant = strings.TrimSpace(appVariant)
+	appVariant := strings.TrimSpace(registration.AppVariant)
 	if appVariant == "" {
 		appVariant = "production"
 	}
 	if len(appVariant) > 64 {
 		return Endpoint{}, errors.New("app_variant is too long")
 	}
-	sealed, err := s.box.Seal([]byte(endpoint.String()))
+	sealedEndpoint, err := s.box.Seal([]byte(endpoint.String()))
+	if err != nil {
+		return Endpoint{}, err
+	}
+	sealedPublicKey, err := s.box.Seal(publicKey)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	sealedAuthSecret, err := s.box.Seal(authSecret)
 	if err != nil {
 		return Endpoint{}, err
 	}
 	expiresAt := time.Now().Add(s.endpointTTL)
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO android_push_endpoint (
-			user_id, device_id, endpoint_encrypted, endpoint_hash, app_variant, expires_at
-		) VALUES ($1::uuid, $2, $3, $4, $5, $6)
+			user_id, device_id, endpoint_encrypted, p256dh_encrypted, auth_encrypted,
+			endpoint_hash, app_variant, expires_at
+		) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (user_id, device_id) DO UPDATE SET
 			endpoint_encrypted = EXCLUDED.endpoint_encrypted,
+			p256dh_encrypted = EXCLUDED.p256dh_encrypted,
+			auth_encrypted = EXCLUDED.auth_encrypted,
 			endpoint_hash = EXCLUDED.endpoint_hash,
 			app_variant = EXCLUDED.app_variant,
 			status = 'active',
@@ -201,7 +229,8 @@ func (s *Service) RegisterEndpoint(ctx context.Context, userID, deviceID, rawEnd
 			disabled_at = NULL,
 			updated_at = now()
 		RETURNING `+endpointProjection,
-		userID, deviceID, sealed, s.endpointHash(endpoint.String()), appVariant, expiresAt)
+		userID, deviceID, sealedEndpoint, sealedPublicKey, sealedAuthSecret,
+		s.subscriptionHash(endpoint.String(), publicKey, authSecret), appVariant, expiresAt)
 	registered, err := scanEndpoint(row)
 	if err == nil {
 		s.Wake()
@@ -240,10 +269,22 @@ func (s *Service) SetEndpointEnabled(ctx context.Context, userID, endpointID str
 		failure_count = CASE WHEN $3 = 'active' THEN 0 ELSE failure_count END,
 		updated_at = now()
 		WHERE id = $1::uuid AND user_id = $2::uuid
+			AND ($3 <> 'active' OR (p256dh_encrypted IS NOT NULL AND auth_encrypted IS NOT NULL))
 		RETURNING `+endpointProjection,
 		endpointID, userID, status, fmt.Sprintf("%d seconds", int64(s.endpointTTL.Seconds())))
 	endpoint, err := scanEndpoint(row)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if enabled {
+			var existsWithoutKeys bool
+			_ = s.pool.QueryRow(ctx, `SELECT EXISTS(
+				SELECT 1 FROM android_push_endpoint
+				WHERE id = $1::uuid AND user_id = $2::uuid
+					AND (p256dh_encrypted IS NULL OR auth_encrypted IS NULL)
+			)`, endpointID, userID).Scan(&existsWithoutKeys)
+			if existsWithoutKeys {
+				return Endpoint{}, ErrEndpointEncryptionRequired
+			}
+		}
 		return Endpoint{}, ErrEndpointNotFound
 	}
 	if err == nil {
@@ -508,6 +549,8 @@ type claimedDelivery struct {
 	ID                string
 	EndpointID        string
 	EndpointEncrypted []byte
+	P256DHEncrypted   []byte
+	AuthEncrypted     []byte
 	EventID           string
 	WorkspaceID       string
 	IssueID           *string
@@ -526,7 +569,8 @@ type claimedDelivery struct {
 func scanClaim(row pgx.Row) (claimedDelivery, error) {
 	var delivery claimedDelivery
 	var issueID, commentID, inboxItemID, actorID pgtype.UUID
-	err := row.Scan(&delivery.ID, &delivery.EndpointID, &delivery.EndpointEncrypted, &delivery.EventID,
+	err := row.Scan(&delivery.ID, &delivery.EndpointID, &delivery.EndpointEncrypted,
+		&delivery.P256DHEncrypted, &delivery.AuthEncrypted, &delivery.EventID,
 		&delivery.WorkspaceID, &issueID, &commentID, &inboxItemID, &delivery.EventType,
 		&delivery.ActorType, &actorID, &delivery.EventCategory, &delivery.EventTitle,
 		&delivery.EventBody, &delivery.EventDetails, &delivery.Attempts)
@@ -561,6 +605,8 @@ func (s *Service) claimOne(ctx context.Context, deliveryID string) (claimedDeliv
 			JOIN android_push_endpoint active_endpoint ON active_endpoint.id = d.endpoint_id
 			WHERE active_endpoint.status = 'active'
 				AND active_endpoint.expires_at > now()
+				AND active_endpoint.p256dh_encrypted IS NOT NULL
+				AND active_endpoint.auth_encrypted IS NOT NULL
 				AND (
 					(d.status IN ('pending', 'retry') AND d.next_attempt_at <= now())
 					OR (d.status = 'delivering' AND d.lease_until < now())
@@ -576,7 +622,8 @@ func (s *Service) claimOne(ctx context.Context, deliveryID string) (claimedDeliv
 			status = 'delivering', attempts = attempts + 1, lease_until = now() + interval '30 seconds'
 		FROM candidate c, android_push_endpoint e
 		WHERE d.id = c.id AND e.id = d.endpoint_id
-		RETURNING d.id::text, d.endpoint_id::text, e.endpoint_encrypted, d.event_id::text,
+		RETURNING d.id::text, d.endpoint_id::text, e.endpoint_encrypted,
+			e.p256dh_encrypted, e.auth_encrypted, d.event_id::text,
 			d.workspace_id::text, d.issue_id, d.comment_id, d.inbox_item_id, d.event_type,
 			COALESCE(d.actor_type, ''), d.actor_id, d.event_category, d.event_title,
 			d.event_body, d.event_details, d.attempts`
@@ -797,12 +844,22 @@ func (s *Service) processOne(ctx context.Context, deliveryID string) (bool, stri
 	if err != nil {
 		return false, "", err
 	}
-	plaintext, err := s.box.Open(delivery.EndpointEncrypted)
+	endpointPlaintext, err := s.box.Open(delivery.EndpointEncrypted)
 	if err != nil {
-		outcome := deliveryOutcome{Status: "failed", Code: "endpoint_decryption_failed", Quarantine: true}
+		outcome := deliveryOutcome{Status: "failed", Code: "subscription_decryption_failed", Quarantine: true}
 		return true, outcome.Status, s.finishDelivery(ctx, delivery, outcome)
 	}
-	endpoint, err := s.endpointAllowed(string(plaintext))
+	publicKey, err := s.box.Open(delivery.P256DHEncrypted)
+	if err != nil {
+		outcome := deliveryOutcome{Status: "failed", Code: "subscription_decryption_failed", Quarantine: true}
+		return true, outcome.Status, s.finishDelivery(ctx, delivery, outcome)
+	}
+	authSecret, err := s.box.Open(delivery.AuthEncrypted)
+	if err != nil {
+		outcome := deliveryOutcome{Status: "failed", Code: "subscription_decryption_failed", Quarantine: true}
+		return true, outcome.Status, s.finishDelivery(ctx, delivery, outcome)
+	}
+	endpoint, err := s.endpointAllowed(string(endpointPlaintext))
 	if err != nil {
 		outcome := deliveryOutcome{Status: "failed", Code: "endpoint_invalid", Quarantine: true}
 		return true, outcome.Status, s.finishDelivery(ctx, delivery, outcome)
@@ -815,13 +872,10 @@ func (s *Service) processOne(ctx context.Context, deliveryID string) (bool, stri
 	if err != nil {
 		return true, "", err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	request, err := s.deliveryRequest(ctx, endpoint, body, publicKey, authSecret, delivery.EventID)
 	if err != nil {
 		return true, "", err
 	}
-	request.Header.Set("Authorization", "Bearer "+s.accessToken)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Idempotency-Key", delivery.EventID)
 	response, requestErr := s.httpClient.Do(request)
 	outcome := classifyDelivery(response, requestErr)
 	if response != nil {
@@ -970,4 +1024,28 @@ func (s *Service) Cleanup(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Service) deliveryRequest(
+	ctx context.Context,
+	endpoint *url.URL,
+	plaintext, publicKey, authSecret []byte,
+	eventID string,
+) (*http.Request, error) {
+	body, err := encryptWebPush(plaintext, publicKey, authSecret)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if s.accessToken != "" {
+		request.Header.Set("Authorization", "Bearer "+s.accessToken)
+	}
+	request.Header.Set("Content-Encoding", "aes128gcm")
+	request.Header.Set("Content-Type", "application/octet-stream")
+	request.Header.Set("TTL", "86400")
+	request.Header.Set("X-Idempotency-Key", eventID)
+	return request, nil
 }

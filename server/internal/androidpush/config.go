@@ -26,27 +26,29 @@ var ErrNotConfigured = errors.New("android push is not configured")
 // Config is the server-owned ntfy publisher contract. BaseURL is an origin and
 // optional path prefix; registered UnifiedPush endpoints must remain below it.
 type Config struct {
-	BaseURL           string
-	AccessToken       string
-	Key               []byte
-	AllowInsecureHTTP bool
-	HTTPClient        *http.Client
-	PollInterval      time.Duration
-	EndpointTTL       time.Duration
+	BaseURL              string
+	AccessToken          string
+	Key                  []byte
+	AllowInsecureHTTP    bool
+	AllowUnauthenticated bool
+	HTTPClient           *http.Client
+	PollInterval         time.Duration
+	EndpointTTL          time.Duration
 }
 
 // NewFromEnv returns nil when Android push is intentionally unconfigured. A
 // partial configuration is rejected so operators do not get a connection UI
-// backed by plaintext endpoints or unauthenticated publishing.
+// backed by plaintext subscription material or unintentionally unauthenticated publishing.
 func NewFromEnv(pool *pgxpool.Pool, logger *slog.Logger) (*Service, error) {
 	baseURL := strings.TrimSpace(os.Getenv("MULTICA_NTFY_BASE_URL"))
 	accessToken := strings.TrimSpace(os.Getenv("MULTICA_NTFY_ACCESS_TOKEN"))
 	keyText := strings.TrimSpace(os.Getenv("MULTICA_NTFY_SECRET_KEY"))
-	if baseURL == "" && accessToken == "" && keyText == "" {
+	allowUnauthenticated := strings.EqualFold(strings.TrimSpace(os.Getenv("MULTICA_NTFY_ALLOW_UNAUTHENTICATED")), "true")
+	if baseURL == "" && accessToken == "" && keyText == "" && !allowUnauthenticated {
 		return nil, nil
 	}
-	if baseURL == "" || accessToken == "" || keyText == "" {
-		return nil, fmt.Errorf("MULTICA_NTFY_BASE_URL, MULTICA_NTFY_ACCESS_TOKEN, and MULTICA_NTFY_SECRET_KEY must be set together")
+	if baseURL == "" || keyText == "" || (accessToken == "" && !allowUnauthenticated) {
+		return nil, fmt.Errorf("MULTICA_NTFY_BASE_URL and MULTICA_NTFY_SECRET_KEY are required; set MULTICA_NTFY_ACCESS_TOKEN or explicitly set MULTICA_NTFY_ALLOW_UNAUTHENTICATED=true")
 	}
 	key, err := secretbox.LoadKey("MULTICA_NTFY_SECRET_KEY")
 	if err != nil {
@@ -54,10 +56,11 @@ func NewFromEnv(pool *pgxpool.Pool, logger *slog.Logger) (*Service, error) {
 	}
 	allowHTTP := strings.EqualFold(strings.TrimSpace(os.Getenv("MULTICA_NTFY_ALLOW_INSECURE_HTTP")), "true")
 	return New(pool, Config{
-		BaseURL:           baseURL,
-		AccessToken:       accessToken,
-		Key:               key,
-		AllowInsecureHTTP: allowHTTP,
+		BaseURL:              baseURL,
+		AccessToken:          accessToken,
+		Key:                  key,
+		AllowInsecureHTTP:    allowHTTP,
+		AllowUnauthenticated: allowUnauthenticated,
 	}, logger)
 }
 
@@ -75,7 +78,7 @@ func New(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) (*Service, error) 
 	if base.Scheme != "https" && !cfg.AllowInsecureHTTP {
 		return nil, errors.New("ntfy base URL must use HTTPS unless MULTICA_NTFY_ALLOW_INSECURE_HTTP=true")
 	}
-	if strings.TrimSpace(cfg.AccessToken) == "" {
+	if strings.TrimSpace(cfg.AccessToken) == "" && !cfg.AllowUnauthenticated {
 		return nil, errors.New("ntfy access token is required")
 	}
 	box, err := secretbox.New(cfg.Key)

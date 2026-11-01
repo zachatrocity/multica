@@ -20,12 +20,18 @@ export interface AndroidAlertState {
   private_lock_screen: boolean;
 }
 
+export interface AndroidAlertRegistration {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}
+
 interface NativeAndroidAlerts {
   getState(): AndroidAlertState;
   registerWithNtfy(): Promise<void>;
   refreshRegistration(): Promise<boolean>;
   unregister(): Promise<void>;
-  getEndpoint(): string | null;
+  getRegistration(): AndroidAlertRegistration | null;
   getDeviceId(): string;
   createChannels(): void;
   setPrivateLockScreen(enabled: boolean): void;
@@ -67,7 +73,8 @@ export const androidAlerts = {
   unregister: async (): Promise<void> => {
     await native?.unregister();
   },
-  getEndpoint: (): string | null => native?.getEndpoint() ?? null,
+  getRegistration: (): AndroidAlertRegistration | null =>
+    native?.getRegistration() ?? null,
   getDeviceId: (): string => native?.getDeviceId() ?? "",
   createChannels: (): void => native?.createChannels(),
   setPrivateLockScreen: (enabled: boolean): void =>
