@@ -14,13 +14,81 @@ import type { User } from "@multica/core/types";
 import { api, ApiError } from "./api";
 import { clearToken, getToken, setToken } from "./secure-storage";
 import { invalidateSessionEpoch } from "./session-epoch";
-import { useWorkspaceStore } from "./workspace-store";
+import {
+  getPersistedWorkspaceSlug,
+  useWorkspaceStore,
+} from "./workspace-store";
 import { disconnectAndroidAlertTransport } from "./android-alerts";
+
+export const STARTUP_STORAGE_TIMEOUT_MS = 8_000;
+export const STARTUP_IDENTITY_TIMEOUT_MS = 35_000;
+
+export type StartupPhase =
+  | "restoring-workspace"
+  | "restoring-session"
+  | "checking-session"
+  | "clearing-session"
+  | "ready";
+
+export type StartupFailureCode =
+  | "timeout"
+  | "storage"
+  | "network"
+  | "server"
+  | "unexpected";
+
+export interface StartupFailure {
+  phase: Exclude<StartupPhase, "ready">;
+  code: StartupFailureCode;
+}
+
+class StartupTimeoutError extends Error {}
+
+async function withStartupTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+): Promise<T> {
+  const deadlineController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    onTimeout?.();
+    deadlineController.abort(new StartupTimeoutError());
+  }, timeoutMs);
+  const deadline = new Promise<never>((_, reject) => {
+    deadlineController.signal.addEventListener(
+      "abort",
+      () => reject(deadlineController.signal.reason),
+      { once: true },
+    );
+  });
+
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function startupFailureCode(
+  error: unknown,
+  phase: Exclude<StartupPhase, "ready">,
+): StartupFailureCode {
+  if (error instanceof StartupTimeoutError) return "timeout";
+  if (phase !== "checking-session") return "storage";
+  if (error instanceof ApiError && error.status === 0) return "timeout";
+  if (error instanceof ApiError && error.status >= 500) return "server";
+  return "network";
+}
+
+let initializationAttempt = 0;
 
 interface AuthState {
   user: User | null;
   isLoading: boolean;
+  startupPhase: StartupPhase;
+  startupFailure: StartupFailure | null;
   initialize: () => Promise<void>;
+  setUnexpectedStartupFailure: () => void;
   sendCode: (email: string) => Promise<void>;
   verifyCode: (email: string, code: string) => Promise<User>;
   logout: () => Promise<void>;
@@ -32,35 +100,117 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isLoading: true,
+  startupPhase: "restoring-workspace",
+  startupFailure: null,
 
   initialize: async () => {
-    // Restore the persisted workspace slug alongside the auth token so the
-    // entry redirect (app/index.tsx) can route directly to the last-used
-    // workspace without flashing /select-workspace.
-    await useWorkspaceStore.getState().restoreSlug();
+    const attempt = ++initializationAttempt;
+    let phase: Exclude<StartupPhase, "ready"> = "restoring-workspace";
+    const isCurrentAttempt = () => attempt === initializationAttempt;
 
-    const token = await getToken();
-    if (!token) {
-      set({ isLoading: false });
-      return;
-    }
-    api.setToken(token);
+    set({
+      isLoading: true,
+      startupPhase: phase,
+      startupFailure: null,
+    });
+
     try {
-      const user = await api.getMe();
-      set({ user, isLoading: false });
-    } catch (err) {
-      // Only clear token on a genuine 401. Network blips / 5xx keep the
-      // token so the next launch (or a manual refresh) can retry.
-      if (err instanceof ApiError && err.status === 401) {
-        // Synchronous first, before the awaited delete: anything already
-        // in flight has to learn the credential is dead now, not once the
-        // Keychain write lands.
-        invalidateSessionEpoch();
-        await clearToken();
+      const slug = await withStartupTimeout(
+        getPersistedWorkspaceSlug(),
+        STARTUP_STORAGE_TIMEOUT_MS,
+      );
+      if (!isCurrentAttempt()) return;
+      useWorkspaceStore.getState().hydratePersistedSlug(slug);
+
+      phase = "restoring-session";
+      set({ startupPhase: phase });
+      const token = await withStartupTimeout(
+        getToken(),
+        STARTUP_STORAGE_TIMEOUT_MS,
+      );
+      if (!isCurrentAttempt()) return;
+      if (!token) {
         api.setToken(null);
+        set({
+          user: null,
+          isLoading: false,
+          startupPhase: "ready",
+          startupFailure: null,
+        });
+        return;
       }
-      set({ user: null, isLoading: false });
+
+      api.setToken(token);
+      phase = "checking-session";
+      set({ startupPhase: phase });
+      const controller = new AbortController();
+      const user = await withStartupTimeout(
+        api.getMe({ signal: controller.signal, skipUnauthorized: true }),
+        STARTUP_IDENTITY_TIMEOUT_MS,
+        () => controller.abort(),
+      );
+      if (!isCurrentAttempt()) return;
+      set({
+        user,
+        isLoading: false,
+        startupPhase: "ready",
+        startupFailure: null,
+      });
+    } catch (error) {
+      if (!isCurrentAttempt()) return;
+
+      if (error instanceof ApiError && error.status === 401) {
+        phase = "clearing-session";
+        set({ startupPhase: phase });
+        invalidateSessionEpoch();
+        api.setToken(null);
+        try {
+          await withStartupTimeout(
+            clearToken(),
+            STARTUP_STORAGE_TIMEOUT_MS,
+          );
+        } catch (clearError) {
+          if (!isCurrentAttempt()) return;
+          const code = startupFailureCode(clearError, phase);
+          console.warn("[startup] initialization failed", { phase, code });
+          set({
+            user: null,
+            isLoading: false,
+            startupFailure: { phase, code },
+          });
+          return;
+        }
+        if (!isCurrentAttempt()) return;
+        set({
+          user: null,
+          isLoading: false,
+          startupPhase: "ready",
+          startupFailure: null,
+        });
+        return;
+      }
+
+      const code = startupFailureCode(error, phase);
+      console.warn("[startup] initialization failed", { phase, code });
+      set({
+        isLoading: false,
+        startupFailure: { phase, code },
+      });
     }
+  },
+
+  setUnexpectedStartupFailure: () => {
+    const phase = useAuthStore.getState().startupPhase;
+    const failedPhase =
+      phase === "ready" ? "checking-session" : phase;
+    console.warn("[startup] initialization failed", {
+      phase: failedPhase,
+      code: "unexpected",
+    });
+    set({
+      isLoading: false,
+      startupFailure: { phase: failedPhase, code: "unexpected" },
+    });
   },
 
   sendCode: async (email) => {

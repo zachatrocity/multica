@@ -25,9 +25,9 @@ interface WorkspaceState {
   /** Set the active workspace and persist the slug (id is in-memory only —
    *  it's resolved from the workspaces list query, not stored). */
   setCurrentWorkspace: (id: string, slug: string) => Promise<void>;
-  /** Restore the slug from SecureStore on cold start. id stays null until
-   *  the workspaces list query resolves. */
-  restoreSlug: () => Promise<string | null>;
+  /** Apply a slug read during startup. The read itself lives outside the
+   *  store so a timed-out initialization cannot mutate state later. */
+  hydratePersistedSlug: (slug: string | null) => void;
   clear: () => Promise<void>;
 }
 
@@ -40,10 +40,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     await SecureStore.setItemAsync(SLUG_KEY, slug);
   },
 
-  restoreSlug: async () => {
-    const slug = await SecureStore.getItemAsync(SLUG_KEY);
-    if (slug) set({ currentWorkspaceSlug: slug });
-    return slug;
+  hydratePersistedSlug: (slug) => {
+    set({ currentWorkspaceSlug: slug });
   },
 
   clear: async () => {
@@ -51,6 +49,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     await SecureStore.deleteItemAsync(SLUG_KEY);
   },
 }));
+
+/** Read without mutating. Startup owns the deadline and only hydrates the
+ * winning initialization attempt, so a late SecureStore result stays inert. */
+export function getPersistedWorkspaceSlug(): Promise<string | null> {
+  return SecureStore.getItemAsync(SLUG_KEY);
+}
 
 /** Sync helper for ApiClient.fetch — reads the current slug without React. */
 export function getCurrentSlug(): string | null {

@@ -99,6 +99,33 @@ editor, select an image, and confirm the upload completes. From the issue editor
 also attach a document and confirm its picker dismisses and the upload completes.
 Unit tests do not replace this device validation.
 
+### Android cold-start recovery
+
+Startup restores the workspace and session under bounded deadlines. A failed
+storage or identity check stops the spinner, preserves any session the server
+has not rejected, and shows a retry action plus a safe diagnostic identifier:
+`startup/<phase>/<code>`. The identifier contains no URL, token, email, or
+workspace value.
+
+For a physical-phone regression check, install the APK over the existing app
+without clearing its data. Open it once on Wi-Fi, then leave Tailscale connected,
+disable Wi-Fi, force-stop `ai.multica.mobile`, and cold-launch on cellular. The
+app must either restore its tabs or show the retry screen within 55 seconds.
+Restore connectivity and tap **Retry startup**; the previous account, workspace,
+and notification registration must still work. If the failure is
+device/network-specific, record the displayed diagnostic and collect bounded
+React Native logs with:
+
+```bash
+adb logcat -c
+adb shell am force-stop ai.multica.mobile
+adb shell monkey -p ai.multica.mobile 1
+adb logcat -d -v time ReactNativeJS:I '*:S'
+```
+
+Share the diagnostic identifier and relevant `[startup]` / `[api]` lines, not
+the complete device log.
+
 ### Android alerts through ntfy
 
 Android alerts require a development/native build; Expo Go cannot load the
