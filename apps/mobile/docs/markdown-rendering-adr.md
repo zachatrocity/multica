@@ -120,6 +120,9 @@ upgrade because newly-added color fields may ship light-mode defaults.
 - Native attributed-string performance for the 95% case (prose)
 - Web-parity syntax highlighting (Shiki, same themes as web)
 - Image lightbox with native `expo-image` caching
+- Authenticated API attachment images in inline previews and the lightbox;
+  bearer headers are never forwarded to signed CDN or external image URLs
+- Visible, tappable retry state when an image request or decode fails
 - Full GFM support via enriched-markdown's `flavor="github"`
 - Light / dark mode that follows `lib/use-color-scheme`
 - Expo's own A-tier recommendation as our prose engine

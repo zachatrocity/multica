@@ -25,6 +25,8 @@ import { createContext, use, useMemo, useState, type ReactNode } from "react";
 import { View } from "react-native";
 import ImageView from "react-native-image-viewing";
 import { Text } from "@/components/ui/text";
+import { api as apiClient } from "@/data/api";
+import { buildMarkdownImageRequest } from "./markdown-image-request";
 
 interface LightboxApi {
   /**
@@ -47,7 +49,7 @@ export function useLightbox(): LightboxApi {
 }
 
 interface Viewing {
-  images: { uri: string }[];
+  images: { uri: string; headers?: Record<string, string> }[];
   index: number;
 }
 
@@ -66,8 +68,14 @@ export function LightboxProvider({ children }: { children: ReactNode }) {
         // fallback web takes when `openAt` reports the key is unknown.
         const images = found >= 0 ? uris : [uri];
         const index = found >= 0 ? found : 0;
+        const token = apiClient.getToken();
         setCurrentIndex(index);
-        setViewing({ images: images.map((u) => ({ uri: u })), index });
+        setViewing({
+          images: images.map((imageUri) =>
+            buildMarkdownImageRequest(imageUri, undefined, token),
+          ),
+          index,
+        });
       },
     }),
     [],

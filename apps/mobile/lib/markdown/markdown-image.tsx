@@ -1,35 +1,27 @@
 /**
- * Block-level image with real aspect ratio + tap-to-lightbox.
+ * Block-level image with authenticated loading, real aspect ratio, visible
+ * failure recovery, and tap-to-lightbox.
  *
- *   - Aspect ratio detection uses RN's `Image.getSize` (cross-platform,
- *     network-friendly). While dimensions resolve we lay out at 16:9 as
- *     a placeholder — same width-100% so the surrounding flow is stable
- *     and only the height shifts once the real ratio lands.
- *   - Rendering uses `expo-image` for on-disk caching + smooth fade-in
- *     transition.
- *   - Tap dispatches into the global LightboxProvider for fullscreen
- *     viewing with pinch-zoom + swipe-down-to-dismiss.
+ *   - Rendering uses `expo-image` for on-disk caching + smooth fade-in.
+ *   - The image's load event supplies its intrinsic dimensions, avoiding a
+ *     second network request solely to calculate aspect ratio.
+ *   - While loading (and after failure) the slot stays at a compact 16:9.
+ *   - A failed load becomes a labelled retry action rather than a permanent
+ *     empty placeholder.
  *
- * URI resolution: markdown content authored in Multica stores image
- * references using the internal `mc://file/<id>` scheme rather than
- * baking signed HTTPS URLs into the content (signed URLs expire). iOS
- * doesn't understand `mc://`, so we look the URI up in the supplied
- * `attachments` list and swap it for the matching `download_url` before
- * passing to any image API. Unmatched URIs fall through unchanged —
- * external https links and well-known schemes load directly; an
- * unknown reference fails the getSize callback and we fall back to a
- * 16:9 placeholder slot.
- *
- * Cancellation: a content re-render that swaps the URI must not let the
- * previous getSize callback overwrite state — guard with a `cancelled`
- * flag in the cleanup path.
+ * URI resolution: markdown content authored in Multica may use the internal
+ * `mc://file/<id>` scheme or the stable authenticated attachment path. The
+ * request helper resolves those references, adds the bearer token only for
+ * this API's URLs, and deliberately keeps signed CDN/external URLs anonymous.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Image as RNImage, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import type { Attachment } from "@multica/core/types";
-import { matchAttachmentByURL } from "@multica/core/attachments/image-sequence";
-import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { Text } from "@/components/ui/text";
+import { api } from "@/data/api";
+import { useT } from "@/lib/i18n";
+import { buildMarkdownImageRequest } from "./markdown-image-request";
 import { useLightbox } from "./lightbox-provider";
 import { useImageSequence } from "./image-sequence";
 
@@ -39,62 +31,73 @@ interface Props {
   attachments?: Attachment[];
 }
 
-export function MarkdownImage({ uri, attachments }: Props) {
+type LoadState = "loading" | "loaded" | "error";
+
+export function MarkdownImage({ uri, alt, attachments }: Props) {
   const { open } = useLightbox();
   const sequence = useImageSequence();
+  const { t } = useT("issues");
+  const token = api.getToken();
   const [aspect, setAspect] = useState<number | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [retryNonce, setRetryNonce] = useState(0);
 
-  const resolvedUri = useMemo(() => {
-    // mc://file/<id> → look up the matching attachment's loadable URL.
-    // No match (external link, html https URL, or unresolved mc://) falls
-    // through to the original uri.
-    //
-    // `matchAttachmentByURL` + this URL pick are the ones the shared sequence
-    // builder uses, so the URI a tap reports is byte-identical to the one
-    // `ImageSequenceProvider` put in the array — otherwise the lightbox could
-    // not find its position and would silently drop back to a single image.
-    const match = matchAttachmentByURL(uri, attachments);
-    const candidate: string | null | undefined = match
-      ? match.download_url || match.markdown_url || match.url
-      : uri;
-    // The backend may return a server-relative `download_url` (e.g.
-    // `/api/attachments/{id}/download`) when no CloudFront signer is
-    // configured — see MUL-2976. RN's image loader has no document
-    // origin to resolve against, so prepend `EXPO_PUBLIC_API_URL` for
-    // server-relative paths and let absolute URLs / external links pass
-    // through unchanged.
-    return resolveAttachmentUrl(candidate) ?? uri;
-  }, [uri, attachments]);
+  const request = useMemo(
+    () => buildMarkdownImageRequest(uri, attachments, token),
+    [uri, attachments, token],
+  );
 
   useEffect(() => {
-    let cancelled = false;
-    RNImage.getSize(
-      resolvedUri,
-      (w, h) => {
-        if (cancelled || !w || !h) return;
-        setAspect(w / h);
-      },
-      () => {
-        // Network failure / decode failure / 404 / unknown URI scheme
-        // (e.g. unresolved mc://) — keep the 16:9 fallback so the slot
-        // still shows the muted background instead of collapsing.
-        if (!cancelled) setAspect(16 / 9);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [resolvedUri]);
+    setAspect(null);
+    setLoadState("loading");
+  }, [request]);
+
+  const handlePress = () => {
+    if (loadState === "error") {
+      setLoadState("loading");
+      setRetryNonce((value) => value + 1);
+      return;
+    }
+    open(request.uri, sequence);
+  };
 
   return (
-    <Pressable onPress={() => open(resolvedUri, sequence)}>
-      <View className="rounded-lg overflow-hidden bg-muted">
+    <Pressable
+      accessibilityRole={loadState === "error" ? "button" : "imagebutton"}
+      accessibilityLabel={
+        loadState === "error" ? t("image.retry_a11y") : alt || t("image.open_a11y")
+      }
+      onPress={handlePress}
+    >
+      <View
+        className="rounded-lg overflow-hidden bg-muted"
+        style={{ width: "100%", aspectRatio: aspect ?? 16 / 9 }}
+      >
         <ExpoImage
-          source={{ uri: resolvedUri }}
-          style={{ width: "100%", aspectRatio: aspect ?? 16 / 9 }}
+          key={retryNonce}
+          source={request}
+          style={{ width: "100%", height: "100%" }}
           contentFit="contain"
           transition={150}
+          recyclingKey={`${request.uri}:${retryNonce}`}
+          onLoad={({ source }) => {
+            if (source.width > 0 && source.height > 0) {
+              setAspect(source.width / source.height);
+            }
+            setLoadState("loaded");
+          }}
+          onError={() => setLoadState("error")}
         />
+        {loadState === "error" ? (
+          <View className="absolute inset-0 items-center justify-center gap-1 bg-muted px-4">
+            <Text className="text-center text-sm text-muted-foreground">
+              {t("image.load_error")}
+            </Text>
+            <Text className="text-sm font-medium text-primary">
+              {t("image.retry")}
+            </Text>
+          </View>
+        ) : null}
       </View>
     </Pressable>
   );
