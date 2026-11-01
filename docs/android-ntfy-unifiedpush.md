@@ -87,6 +87,94 @@ UnifiedPush endpoint with an Android Keystore key. Signing out calls the
 authenticated device-revocation endpoint, unregisters from ntfy, and clears
 the local endpoint even when server revocation cannot complete.
 
+
+## Device setup and upgrade check
+
+Use the production Android package, `ai.multica.mobile`. An APK is an in-place
+upgrade only when both its package name and signing certificate match the
+installed build. Do not uninstall the existing app to make an incompatible APK
+install; uninstalling removes the evidence that sessions and local state survive
+the upgrade.
+
+1. Configure the backend and ntfy server as described above. Do not copy the
+   publisher token or a device endpoint onto the phone, into Multica settings,
+   or into a test report.
+2. Install and sign in to the ntfy Android app, point it at the same ntfy server,
+   and enable its UnifiedPush distributor.
+3. Install the Multica APK over the existing fork. For an ADB handoff, use
+   `adb install -r multica-android.apk`; Android must report `Success` without
+   uninstalling `ai.multica.mobile`.
+4. Launch Multica and confirm the existing account and self-hosted server are
+   still selected.
+5. Open **More → Settings → Notifications → Set up Android alerts**. Accept the
+   notification permission prompt, then explicitly enable alerts for each
+   intended workspace. Endpoint material remains between the ntfy app, Android,
+   and the Multica backend and is not displayed by Multica.
+6. Use **Send test notification** before generating real events. Then exercise
+   mentions, assignments, review/blocked/failure handoffs, and any optional
+   categories that were explicitly enabled.
+
+For tap validation, record the expected workspace, issue, and optional comment
+before sending each event. Check foreground, background, normal process death,
+cold start, and signed-out login resume separately. "Normally not running"
+means Android reclaimed the process or the user swiped the task away; it is not
+the same as force-stop.
+
+## Validation evidence
+
+Keep these evidence classes separate in a release handoff:
+
+- **Automated contract tests** can prove payload validation, preference
+  selection, endpoint lifecycle, retry/idempotency rules, and destination
+  recovery state transitions. They do not prove Android or ntfy background
+  delivery.
+- **Emulator smoke checks** can prove package installation, in-place upgrade,
+  release startup, permission/channel UI, and synthetic notification rendering
+  and taps. An emulator without the configured ntfy distributor is not
+  end-to-end transport evidence.
+- **Physical-device evidence** requires the configured ntfy distributor and the
+  real authenticated transport. Record device/Android version, Multica APK
+  digest, app state, event type and identifier, observed notification count, tap
+  destination, and any battery restriction. Never record the UnifiedPush
+  endpoint, ntfy topic, or access token.
+
+The physical acceptance pass must include one controlled event delivered
+exactly once while Multica is backgrounded or normally not running. Re-deliver
+that event identifier to verify deduplication, then send a distinct event for
+the same issue to verify replacement behavior.
+
+## Troubleshooting
+
+- **ntfy is not offered as a distributor:** install or update the ntfy Android
+  app, sign in to the intended server, enable UnifiedPush in ntfy, then retry
+  Multica setup. Expo Go cannot provide the Multica native connector.
+- **No visible notification:** check Android's Multica app permission and the
+  exact **Action needed** or **Activity** channel. Also check that the workspace
+  and category are enabled in Multica. Inbox preferences do not control Android
+  alerts.
+- **Force-stop:** force-stopping Multica prevents its push service from running
+  until Multica is manually launched again. Force-stopping ntfy likewise stops
+  the distributor. Do not report force-stop as equivalent to a cold-start pass.
+- **Doze or vendor battery policy:** delivery can be delayed when ntfy is
+  restricted. Allow ntfy background operation when the device vendor requires
+  it; only exempt Multica itself if device testing demonstrates that it is also
+  being restricted. The in-app inbox remains authoritative.
+- **Network loss:** leave the event identifier unchanged. The backend retries
+  transient failures with bounded backoff, and the client deduplicates a retry
+  accepted before the connection failed. Reconnect does not replay events from
+  before endpoint activation or workspace enablement.
+- **Signed out or expired Multica credentials:** a notification tap preserves
+  only the validated destination through login and rechecks workspace and issue
+  access afterward. Logging out revokes and clears the device endpoint, so new
+  alerts require reconnection after the next login.
+- **Missing or forbidden content:** the app never guesses by workspace slug.
+  Removed workspace access opens workspace selection; a forbidden or deleted
+  issue offers the authorized workspace inbox; a deleted comment opens the
+  issue without an anchor.
+- **Duplicates:** the same `event_id` is ignored. A different event for the same
+  workspace and issue replaces that issue's existing notification, so Android
+  should not accumulate one card per delivery attempt.
+
 ## Failure and retention behavior
 
 - Inbox inclusion and Android delivery are selected independently. Muting an inbox group does not mute an enabled Android category, and ntfy failure never rolls back an inbox write.
