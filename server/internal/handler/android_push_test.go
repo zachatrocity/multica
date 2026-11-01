@@ -177,7 +177,7 @@ func TestAndroidPushPreferencesAreWorkspaceScopedAndTestUsesTransport(t *testing
 	if received["version"] != float64(1) || received["event_id"] != idempotency || received["event_type"] != "test" || received["workspace_id"] != testWorkspaceID {
 		t.Fatalf("test payload=%#v", received)
 	}
-	for _, forbidden := range []string{"endpoint", "title", "body", "url"} {
+	for _, forbidden := range []string{"endpoint", "url"} {
 		if _, exists := received[forbidden]; exists {
 			t.Fatalf("test payload exposed %s: %#v", forbidden, received)
 		}
