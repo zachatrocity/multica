@@ -38,7 +38,7 @@ type Config struct {
 
 // NewFromEnv returns nil when Android push is intentionally unconfigured. A
 // partial configuration is rejected so operators do not get a connection UI
-// backed by plaintext endpoints or unintentionally unauthenticated publishing.
+// backed by plaintext subscription material or unintentionally unauthenticated publishing.
 func NewFromEnv(pool *pgxpool.Pool, logger *slog.Logger) (*Service, error) {
 	baseURL := strings.TrimSpace(os.Getenv("MULTICA_NTFY_BASE_URL"))
 	accessToken := strings.TrimSpace(os.Getenv("MULTICA_NTFY_ACCESS_TOKEN"))

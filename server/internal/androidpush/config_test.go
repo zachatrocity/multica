@@ -1,13 +1,16 @@
 package androidpush
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/base64"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestUnauthenticatedPublishingRequiresExplicitOptIn(t *testing.T) {
@@ -71,14 +74,38 @@ func TestDeliveryAuthorizationHeader(t *testing.T) {
 				if r.Header.Get("X-Idempotency-Key") != "test-event" {
 					t.Error("missing idempotency key")
 				}
-				if r.Header.Get("Content-Type") != "application/json" {
-					t.Error("missing content type")
+				if r.Header.Get("Content-Encoding") != "aes128gcm" ||
+					r.Header.Get("Content-Type") != "application/octet-stream" ||
+					r.Header.Get("TTL") != "86400" {
+					t.Errorf("invalid Web Push headers: %v", r.Header)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				if bytes.Contains(body, []byte(`{"version":1}`)) {
+					t.Error("delivery body exposed plaintext")
 				}
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer server.Close()
 			s := &Service{accessToken: token}
-			req, err := s.deliveryRequest(context.Background(), mustURL(t, server.URL), []byte(`{"version":1}`), "test-event")
+			recipient, err := ecdh.P256().GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authSecret := make([]byte, webPushAuthSecretSize)
+			if _, err := io.ReadFull(rand.Reader, authSecret); err != nil {
+				t.Fatal(err)
+			}
+			req, err := s.deliveryRequest(
+				context.Background(),
+				mustURL(t, server.URL),
+				[]byte(`{"version":1}`),
+				recipient.PublicKey().Bytes(),
+				authSecret,
+				"test-event",
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
