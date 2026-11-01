@@ -1,15 +1,20 @@
 import { defineConfig } from "vitest/config";
 import path from "node:path";
+import {
+  JsxEmit,
+  ModuleKind,
+  ScriptTarget,
+  transpileModule,
+} from "typescript";
 
-// Mobile vitest is intentionally minimal — Node environment only, scoped to
-// pure-function helpers in `lib/` and headless data-layer logic in `data/`
-// (query-key + cache-patch functions that take a QueryClient but touch no
-// DOM / RN native modules). We don't ship jsdom or RN test renderers here
-// because the app runs on Hermes / native shims and any DOM-shaped runner
-// would be a lie. Tests that need RN component rendering would need a
-// separate jest+react-native-testing-library track; for now we keep this
-// lane for helpers, serializers, and cache updaters only. Data-layer tests
-// must mock `@/data/api` so the native fetch chain never loads.
+// Mobile Vitest stays in Node: pure helpers, headless data logic, and focused
+// component interaction tests with native host components mocked. It does not
+// use a DOM or pretend that browser rendering matches React Native. The issue
+// menu regression test uses React's renderer to exercise the real RNR dropdown
+// state and portal lifecycle on an Android platform shim.
+//
+// Data-layer tests must mock `@/data/api` so the native fetch chain never
+// loads.
 //
 // Co-located test files (foo.ts + foo.test.ts) match how the rest of the
 // monorepo organises vitest suites.
@@ -17,7 +22,30 @@ import path from "node:path";
 // mocked; these do not verify native rendering.
 // App configuration tests also run here to cover native prebuild options
 // across environment variants without loading React Native.
+const transformReactNativePrimitiveJsx = {
+  name: "transform-react-native-primitive-jsx",
+  enforce: "pre" as const,
+  transform(code: string, id: string) {
+    const sourcePath = id.split("?")[0];
+    if (
+      !sourcePath.includes("/@rn-primitives") ||
+      !/\.[mc]?js$/.test(sourcePath)
+    ) {
+      return;
+    }
+    return transpileModule(code, {
+      compilerOptions: {
+        jsx: JsxEmit.ReactJSX,
+        module: ModuleKind.ESNext,
+        target: ScriptTarget.ES2022,
+      },
+      fileName: `${sourcePath}.tsx`,
+    }).outputText;
+  },
+};
+
 export default defineConfig({
+  plugins: [transformReactNativePrimitiveJsx],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "."),
@@ -31,7 +59,13 @@ export default defineConfig({
       "lib/**/*.test.ts",
       "data/**/*.test.ts",
       "components/issue/run-cancel-button.test.ts",
+      "components/issue/issue-actions-menu.test.ts",
     ],
+    server: {
+      deps: {
+        inline: [/@rn-primitives\//],
+      },
+    },
     passWithNoTests: true,
   },
 });
